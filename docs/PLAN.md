@@ -50,14 +50,14 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 **Done when:** `cargo run -p desk -- --minter http://localhost:8080` lets you talk to Lexi on a laptop with headphones; barge-in works; Ctrl-C closes cleanly; the usage from `response.done` is printed.
 
 ## Phase 4 — Android shell (`android/`)
-- [ ] Gradle project (Kotlin, no Compose), minSdk 31, targetSdk current; R8 on; only `androidx.core` allowed.
-- [ ] Gradle task running `cargo ndk` before `preBuild` (SPEC §8); arm64 by default, `-PwithArmv7` flag.
-- [ ] `MainActivity`: full-screen `SurfaceView`, custom-drawn overlay buttons (Call, Mute, Route, Mode), status line, gesture detectors; edge-to-edge; permission flow.
-- [ ] `NativeBridge.kt` with the JNI surface from SPEC §4.2; `System.loadLibrary("lexi_core")`.
-- [ ] Rust `ffi` module: `jni` crate exports, `catch_unwind` on every entry, global `JavaVM`, callback dispatcher thread; `android_logger` for logcat.
-- [ ] `CallService` (FGS type microphone) + notification with Mute/Hang up actions; wake lock + Wi-Fi lock.
-- [ ] `AudioRouter` per SPEC §6.3; `NetworkWatcher` → `onNetworkChanged()`.
-- [ ] Install-ID: random UUID in SharedPreferences, sent as SHA-256 hex.
+- [x] Gradle project (Kotlin, no Compose), minSdk 31, targetSdk current; R8 on; only `androidx.core` allowed.
+- [x] Gradle task running `cargo ndk` before `preBuild` (SPEC §8); arm64 by default, `-PwithArmv7` flag. (verified by the build; armv7 untested)
+- [x] `MainActivity`: full-screen `SurfaceView`, custom-drawn overlay buttons (Call, Mute, Route, Mode), status line, gesture detectors; edge-to-edge; permission flow. (code written; **not run on a device**)
+- [x] `NativeBridge.kt` with the JNI surface from SPEC §4.2; `System.loadLibrary("lexi_core")`.
+- [x] Rust `ffi` module: `jni` crate exports, `catch_unwind` on every entry, global `JavaVM`, callback dispatcher thread; `android_logger` for logcat. (compiled + clippy-clean for aarch64-linux-android; native calls are stubs)
+- [x] `CallService` (FGS type microphone) + notification with Mute/Hang up actions; wake lock + Wi-Fi lock. (written, **not run on a device**)
+- [x] `AudioRouter` per SPEC §6.3; `NetworkWatcher` → `onNetworkChanged()`. (written, **not run on a device**)
+- [x] Install-ID: random UUID in SharedPreferences, sent as SHA-256 hex.
 
 **Done when:** `./gradlew assembleDebug` produces an APK; on a device the buttons render and the permission flow works, with stubbed native calls logging to logcat.
 

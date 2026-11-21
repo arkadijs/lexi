@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">Lexi</string>
+    <string name="cd_call">Call Lexi</string>
+    <string name="cd_hangup">Hang up</string>
+    <string name="cd_mute">Mute microphone</string>
+    <string name="cd_unmute">Unmute microphone</string>
+    <string name="cd_route_earpiece">Audio output: earpiece. Tap to switch</string>
+    <string name="cd_route_speaker">Audio output: speaker. Tap to switch</string>
+    <string name="cd_route_wired">Audio output: wired headset. Tap to switch</string>
+    <string name="cd_route_bluetooth">Audio output: Bluetooth. Tap to switch</string>
+    <string name="cd_mode_fluid">Visual: fluid. Tap for fractal</string>
+    <string name="cd_mode_fractal">Visual: fractal. Tap for fluid</string>
+    <string name="st_connecting">Connecting…</string>
+    <string name="st_live">Talking with Lexi</string>
+    <string name="st_reconnecting">Reconnecting…</string>
+    <string name="st_ending">Ending…</string>
+    <string name="st_no_network">No network</string>
+    <string name="st_need_mic">Microphone permission needed</string>
+    <string name="st_need_mic_settings">Microphone permission needed. Enable it in Settings</string>
+    <string name="st_interrupted">Call interrupted</string>
+    <string name="st_error">Something went wrong</string>
+    <string name="notif_channel">Calls</string>
+    <string name="notif_title">Talking with Lexi</string>
+    <string name="notif_mute">Mute</string>
+    <string name="notif_unmute">Unmute</string>
+    <string name="notif_hangup">Hang up</string>
+</resources>
