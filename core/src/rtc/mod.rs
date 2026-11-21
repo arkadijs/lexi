@@ -469,15 +469,25 @@ impl Net {
             frame[a.len()..a.len() + b.len()].copy_from_slice(b);
             chunk.commit_all();
         }
-        if self.muted.load(Ordering::Relaxed) {
+        let muted = self.muted.load(Ordering::Relaxed);
+        if muted {
             frame.fill(0);
         }
         smooth(&self.levels.mic, rms(&frame));
         if !self.connected {
             return true; // discard stale audio until media can flow
         }
-        let Ok(Encoded::Packet { ts, data }) = self.enc.encode(&frame) else {
-            return true; // DTX or encode error: nothing to send
+        if muted {
+            // Silence would be DTX-suppressed anyway; skipping the encode saves the CPU while keeping
+            // the RTP timestamps advancing.
+            self.enc.skip_frame();
+            return true;
+        }
+        // DTX "silence" frames are sent too (see `Encoded::Silent`): without them the server's VAD
+        // never sees the silence that ends the user's turn.
+        let (ts, data) = match self.enc.encode(&frame) {
+            Ok(Encoded::Packet { ts, data }) | Ok(Encoded::Silent { ts, data }) => (ts, data),
+            Err(_) => return true,
         };
         if let Some(w) = self.rtc.writer(self.mid) {
             let pt = w.payload_params().next().map(|p| p.pt());

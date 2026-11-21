@@ -21,7 +21,16 @@ echo ">> shipping source @ $TAG"
 git archive HEAD | ssh "$HOST" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR && tar -C $REMOTE_DIR -xf -"
 
 echo ">> building image lexi-minter:$TAG (containerd store, visible to kubelet)"
-ssh "$HOST" "cd $REMOTE_DIR && docker build -f minter/Dockerfile -t lexi-minter:$TAG . 2>&1 | tail -n 5"
+{
+  cat scripts/measure-lib.sh
+  cat <<REMOTE
+cd $REMOTE_DIR
+measure_run "minter image build" bash -c 'docker build -f minter/Dockerfile -t lexi-minter:$TAG . > /tmp/lexi-image-build.log 2>&1'
+rc=\$?
+tail -n 5 /tmp/lexi-image-build.log
+exit \$rc
+REMOTE
+} | ssh "$HOST" bash -s
 
 echo ">> importing image into the kubelet's containerd namespace (k8s.io)"
 # docker's image store (containerd namespace "moby") is not what the kubelet reads, and our ssh user

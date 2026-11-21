@@ -16,7 +16,9 @@ configMapGenerator:
   - name: lexi-minter-env
     literals:
       - LEXI_MODEL=gpt-realtime-2.1-mini
-      - LEXI_VOICE=marin
+      - LEXI_VOICE=cedar
+      - LEXI_REASONING_EFFORT=low
+      - LEXI_VAD_SILENCE_MS=400
       - LEXI_TOKEN_TTL_SECS=60
       - LEXI_INSTRUCTIONS_FILE=/etc/lexi/instructions.txt
       - LEXI_ATTEST_MODE=off

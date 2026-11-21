@@ -55,8 +55,10 @@ impl RtpClock {
 pub enum Encoded {
     /// Packet to send, with the RTP timestamp of this frame.
     Packet { ts: u64, data: Vec<u8> },
-    /// DTX: nothing to send for this frame (the clock still advanced).
-    Silent { ts: u64 },
+    /// DTX: a 1-2 byte "silence" frame. **Send it anyway**: the server's voice-activity detection
+    /// only advances on audio it receives, so withholding these delayed the end-of-speech
+    /// detection (and the bot's reply) by seconds. They cost ~1 kB/s.
+    Silent { ts: u64, data: Vec<u8> },
 }
 
 pub struct OpusEncoder {
@@ -82,11 +84,24 @@ impl OpusEncoder {
         // FEC is only produced if the encoder expects loss.
         enc.set_packet_loss_perc(10)?;
         enc.set_dtx(true)?;
+        // Speech at 32 kbps gains little above complexity ~5 but costs roughly twice the CPU (N4).
+        enc.set_complexity(5)?;
         Ok(Self {
             enc,
             clock: RtpClock::new(),
             buf: vec![0; MAX_PACKET],
         })
+    }
+
+    /// Tests only: send every frame (a pure test tone is "not speech" to DTX at low complexity).
+    #[cfg(test)]
+    pub fn disable_dtx(&mut self) {
+        let _ = self.enc.set_dtx(false);
+    }
+
+    /// Account for one 20 ms frame without encoding it (muted): keeps RTP timestamps contiguous.
+    pub fn skip_frame(&mut self) {
+        self.clock.next_frame();
     }
 
     /// Encode exactly one 20 ms frame ([`FRAME_SAMPLES`] samples).
@@ -100,7 +115,10 @@ impl OpusEncoder {
         let ts = self.clock.next_frame();
         let n = self.enc.encode(pcm, &mut self.buf)?;
         if n <= DTX_MAX_LEN {
-            Ok(Encoded::Silent { ts })
+            Ok(Encoded::Silent {
+                ts,
+                data: self.buf[..n].to_vec(),
+            })
         } else {
             Ok(Encoded::Packet {
                 ts,
@@ -153,6 +171,22 @@ impl OpusDecoder {
 mod tests {
     use super::*;
 
+    #[test]
+    fn skipped_frames_keep_rtp_timestamps_contiguous() {
+        let mut enc = OpusEncoder::new().unwrap();
+        let ts = |e: Encoded| match e {
+            Encoded::Packet { ts, .. } | Encoded::Silent { ts, .. } => ts,
+        };
+        assert_eq!(ts(enc.encode(&tone(0, 8000.0)).unwrap()), 0);
+        enc.skip_frame(); // a muted frame
+        enc.skip_frame();
+        // the next real frame lands 3 frames later, exactly as if the muted ones had been encoded
+        assert_eq!(
+            ts(enc.encode(&tone(3, 8000.0)).unwrap()),
+            3 * RTP_TICKS_PER_FRAME
+        );
+    }
+
     fn tone(frame: usize, amp: f32) -> Vec<i16> {
         (0..FRAME_SAMPLES)
             .map(|i| {
@@ -183,7 +217,7 @@ mod tests {
                 vec![0; FRAME_SAMPLES]
             };
             match e.encode(&pcm).unwrap() {
-                Encoded::Packet { ts, .. } | Encoded::Silent { ts } => stamps.push(ts),
+                Encoded::Packet { ts, .. } | Encoded::Silent { ts, .. } => stamps.push(ts),
             }
         }
         for (i, w) in stamps.windows(2).enumerate() {

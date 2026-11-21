@@ -4,22 +4,28 @@
 //! is called from audio callbacks; Kotlin callbacks go through one dispatcher thread that owns the
 //! callback reference and receives events over a bounded channel (never blocking the sender).
 //!
-//! Phase 4: the native side is a stub that logs to logcat and drives plausible state transitions
-//! so the UI can be exercised. Real call logic arrives in Phase 5, rendering in Phase 6.
+//! Calls run on the supervisor in [`crate::call`] with the AAudio backend; rendering is Phase 6.
 
+use crate::audio::AAudioBackend;
+use crate::call::{CallConfig, CallHandle, RealConnector};
+use crate::openai::Secret;
+use crate::rtc::RtcConfig;
 use crate::state::{CallState, Shared};
 use jni::objects::{Global, JClass, JObject, JString};
 use jni::sys::{jboolean, jfloat, jint};
 use jni::{jni_sig, jni_str, EnvUnowned, JValue, JavaVM};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
 
 const EVENT_QUEUE: usize = 32;
 
-struct Event {
-    state: CallState,
-    detail: Option<String>,
+enum Event {
+    State {
+        state: CallState,
+        detail: Option<String>,
+    },
+    /// Running cost of the call in micro-USD (SPEC §2.6).
+    Cost(u64),
 }
 
 struct Core {
@@ -28,6 +34,15 @@ struct Core {
 }
 
 static CORE: OnceLock<Core> = OnceLock::new();
+/// The active (or last) call. Locked only from JNI threads, never from audio callbacks.
+static CALL: Mutex<Option<CallHandle>> = Mutex::new(None);
+
+fn with_call(f: impl FnOnce(&CallHandle)) -> bool {
+    match CALL.lock() {
+        Ok(g) => g.as_ref().map(f).is_some(),
+        Err(_) => false,
+    }
+}
 
 /// Wrap a JNI export body: upgrades the env, catches panics, logs errors, returns `$default`.
 macro_rules! jni_guard {
@@ -52,12 +67,21 @@ fn emit(state: CallState, detail: Option<&str>) {
         return;
     };
     core.shared.set_call_state(state);
-    match core.tx.try_send(Event {
+    match core.tx.try_send(Event::State {
         state,
         detail: detail.map(str::to_owned),
     }) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => log::warn!("callback queue full; dropped {state:?}"),
+        Err(TrySendError::Disconnected(_)) => log::error!("callback dispatcher is gone"),
+    }
+}
+
+fn emit_cost(micro_usd: u64) {
+    let Some(core) = CORE.get() else { return };
+    match core.tx.try_send(Event::Cost(micro_usd)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => log::warn!("callback queue full; dropped a cost update"),
         Err(TrySendError::Disconnected(_)) => log::error!("callback dispatcher is gone"),
     }
 }
@@ -73,16 +97,28 @@ fn spawn_dispatcher(callback: Global<JObject<'static>>, rx: std::sync::mpsc::Rec
             while let Ok(ev) = rx.recv() {
                 let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     vm.attach_current_thread(|env| -> Result<(), jni::errors::Error> {
-                        let detail = match &ev.detail {
-                            Some(d) => JObject::from(env.new_string(d)?),
-                            None => JObject::null(),
-                        };
-                        env.call_method(
-                            &callback,
-                            jni_str!("onState"),
-                            jni_sig!("(ILjava/lang/String;)V"),
-                            &[JValue::Int(ev.state as jint), JValue::Object(&detail)],
-                        )?;
+                        match &ev {
+                            Event::State { state, detail } => {
+                                let detail = match detail {
+                                    Some(d) => JObject::from(env.new_string(d)?),
+                                    None => JObject::null(),
+                                };
+                                env.call_method(
+                                    &callback,
+                                    jni_str!("onState"),
+                                    jni_sig!("(ILjava/lang/String;)V"),
+                                    &[JValue::Int(*state as jint), JValue::Object(&detail)],
+                                )?;
+                            }
+                            Event::Cost(micro) => {
+                                env.call_method(
+                                    &callback,
+                                    jni_str!("onCost"),
+                                    jni_sig!("(J)V"),
+                                    &[JValue::Long(i64::try_from(*micro).unwrap_or(i64::MAX))],
+                                )?;
+                            }
+                        }
                         Ok(())
                     })
                 }));
@@ -122,7 +158,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_init<'l>(
             tx,
             shared: Arc::new(Shared::default()),
         });
-        log::info!("init ok (stub core, Phase 4)");
+        log::info!("init ok");
         Ok(())
     })
 }
@@ -211,27 +247,62 @@ pub extern "system" fn Java_app_lexi_NativeBridge_startCall<'l>(
     _class: JClass<'l>,
     minter_url: JString<'l>,
     install_id_hash: JString<'l>,
+    attest_key: JString<'l>,
+    voice: JString<'l>,
 ) {
     jni_guard!(env, |e| {
         let url = minter_url.try_to_string(e)?;
-        // The install hash is pseudonymous but still not logged: only its presence/length.
-        let hash_len = install_id_hash.try_to_string(e)?.len();
-        log::info!("startCall url={url} install_hash_len={hash_len} (stub)");
-        emit(CallState::Connecting, None);
-        // Stub: pretend the call connects. Replaced by the real session in Phase 5.
-        let _ = std::thread::Builder::new()
-            .name("lexi-stub-call".into())
-            .spawn(|| {
-                std::thread::sleep(Duration::from_millis(700));
-                if CORE
-                    .get()
-                    .is_some_and(|c| c.shared.call_state() == CallState::Connecting)
-                {
-                    emit(CallState::Live, None);
-                }
-            });
+        let hash = install_id_hash.try_to_string(e)?;
+        let key = attest_key.try_to_string(e)?;
+        let voice = voice.try_to_string(e)?;
+        start_call(url, hash, key, voice);
         Ok(())
     })
+}
+
+fn start_call(url: String, hash: String, key: String, voice: String) {
+    let Some(core) = CORE.get() else {
+        log::error!("startCall before init");
+        return;
+    };
+    if matches!(
+        core.shared.call_state(),
+        CallState::Connecting | CallState::Live | CallState::Reconnecting
+    ) {
+        log::warn!("startCall ignored: a call is already active");
+        return;
+    }
+    // Only the URL host is logged; the install hash and attestation key never are.
+    log::info!(
+        "startCall url={url} attest={} voice={voice}",
+        !key.is_empty()
+    );
+    let connector = Arc::new(RealConnector {
+        minter_url: url,
+        install_hash: hash,
+        attest_key: (!key.is_empty()).then(|| Secret::new(key)),
+        voice: (!voice.is_empty()).then_some(voice),
+        rtc: RtcConfig::default(),
+    });
+    let started = CallHandle::start(
+        CallConfig::default(),
+        connector,
+        Box::new(AAudioBackend::new()),
+        Arc::clone(&core.shared),
+        Box::new(emit),
+        Box::new(emit_cost),
+    );
+    match started {
+        Ok(handle) => {
+            if let Ok(mut g) = CALL.lock() {
+                *g = Some(handle);
+            }
+        }
+        Err(e) => {
+            log::error!("cannot start call supervisor: {e}");
+            emit(CallState::Error, Some("error"));
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -240,8 +311,10 @@ pub extern "system" fn Java_app_lexi_NativeBridge_endCall<'l>(
     _class: JClass<'l>,
 ) {
     jni_guard!(env, |_e| {
-        log::info!("endCall (stub)");
-        emit(CallState::Ended, Some("hangup"));
+        log::info!("endCall");
+        if !with_call(CallHandle::hangup) {
+            emit(CallState::Ended, Some("hangup"));
+        }
         Ok(())
     })
 }
@@ -253,6 +326,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_setMuted<'l>(
     muted: jboolean,
 ) {
     jni_guard!(env, |_e| {
+        // Applied by the supervisor within one tick, including before a call exists.
         if let Some(core) = CORE.get() {
             core.shared.set_muted(muted);
         }
@@ -267,7 +341,8 @@ pub extern "system" fn Java_app_lexi_NativeBridge_onAudioRouteChanged<'l>(
     _class: JClass<'l>,
 ) {
     jni_guard!(env, |_e| {
-        log::info!("onAudioRouteChanged (stub)");
+        log::info!("onAudioRouteChanged");
+        with_call(CallHandle::route_changed);
         Ok(())
     })
 }
@@ -278,7 +353,8 @@ pub extern "system" fn Java_app_lexi_NativeBridge_onNetworkChanged<'l>(
     _class: JClass<'l>,
 ) {
     jni_guard!(env, |_e| {
-        log::info!("onNetworkChanged (stub)");
+        log::info!("onNetworkChanged");
+        with_call(CallHandle::network_changed);
         Ok(())
     })
 }

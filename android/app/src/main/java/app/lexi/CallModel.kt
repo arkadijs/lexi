@@ -22,6 +22,10 @@ object CallModel : NativeCallback {
     var muted = false
         private set
 
+    /** Running cost of the current call in micro-USD; null until the first priced response. */
+    var costMicro: Long? = null
+        private set
+
     /** Why the call ended when it was our decision rather than the user's (e.g. "interrupted"). */
     var endReason: String? = null
 
@@ -31,8 +35,16 @@ object CallModel : NativeCallback {
         main.post { set(state, detail) }
     }
 
+    override fun onCost(microUsd: Long) {
+        main.post {
+            costMicro = microUsd
+            notifyChanged()
+        }
+    }
+
     fun begin() {
-        muted = false
+        costMicro = null
+        // `muted` is deliberately kept: muting before the call starts must hold from the first frame.
         endReason = null
         set(CONNECTING, null)
     }

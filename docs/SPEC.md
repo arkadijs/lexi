@@ -27,29 +27,59 @@ the current official docs before implementing them.
 - Video, screen sharing, multi-party calls.
 - Offline mode.
 - Telecom/ConnectionService integration (planned for v1.1, see §6.4).
+- Publishing on Google Play (and therefore Play Integrity, AABs and Play size accounting). The app is sideloaded
+  as a signed APK for the author and friends only; distribution is a direct file/release link.
 
 ---
 
 ## 2. Product behaviour
 
 ### 2.1 The coach
-- Persona: friendly, concise vocabulary coach ("Lexi"). Helps the user learn and use words:
-  definitions, nuance between synonyms, usage in sentences, etymology, quick spoken quizzes,
-  pronunciation tips, word of the day.
-- Keeps replies short (1–3 sentences) unless asked to elaborate — this also minimises cost
-  (model speech is ~4× the price of user speech).
-- Instructions, voice and turn detection are set **server-side by the minter** when the
-  ephemeral key is created; the app only sends minimal `session.update` if needed.
-- Language: English for v1; the instructions should be a config value in the minter so it can change without an app release.
+- **Prompt** (cleared and rewritten 2026-11-22): language behaviour only, no persona or role. The model greets the
+  user with one short sentence in Russian before they say anything, expects a Russian-speaking user and answers in
+  Russian by default, switches language when the user does (or asks it to) and stays in it until they switch again,
+  and speaks naturally with native pronunciation in whatever language it uses. The text is a minter config value
+  (`LEXI_INSTRUCTIONS_FILE`, the `lexi-minter-instructions` ConfigMap), so it changes without an app release.
+- **Greeting trigger:** instructions alone do not make the model speak first. The core sends `response.create` once
+  when the `oai-events` channel opens (once per call: a reconnect does not greet again). It costs a few audio tokens.
+- Brevity and the vocabulary-coach role are no longer instructed; replies can be longer. The cost readout (§2.6)
+  shows what that costs.
+- Instructions, voice, turn detection and reasoning effort are set **server-side by the minter** when the ephemeral
+  key is created; the app only chooses the voice (below).
+- **Voice:** selectable from a popup at the top of the screen (§2.2) with two entries, **Cedar** (the default) and
+  **Alloy**, no section headers. The minter accepts all ten built-in voices (`LEXI_VOICES`); only the app's menu is
+  narrowed. The choice is sent as `voice` in the token request (§5.2), validated by the minter, remembered across
+  launches (a stored voice that is no longer offered falls back to Cedar) and **fixed for the whole call**: the API
+  locks the voice once the model has spoken, so a change made during a call applies to the next one.
+- **Russian voice quality:** there is no official rating. OpenAI's docs call the voices "optimized for English" (TTS
+  page), recommend Marin and Cedar for best quality (not language-specific), and say language and accent are controlled
+  separately in the prompt. A community thread (community.openai.com, "Realtime Russian voice…") reports an
+  English-like melody, unstable consonants and a metallic resonance in Russian, and custom voices need enterprise
+  approval. Choosing a voice for Russian is therefore empirical.
+  Measured 2026-11-22: all ten voices read the same Russian paragraph (desktop harness, dev key), transcribed with
+  `gpt-4o-transcribe` (language ru). Eight voices scored 0 % word errors, so speech-to-text cannot rank them
+  (it measures intelligibility, not naturalness); `ballad` scored 12.5 % and `verse` read only the first sentence of the
+  text (56 % errors: it does not follow "read exactly" well). Naturalness has to be judged by ear: the ten samples
+  were copied to the test phone (`Download/lexi-voices/ru-<voice>.wav`) and the voices are selectable in the app.
+- **Turn latency** (measured 2026-11-22, desktop harness against the live API, end of user speech → first bot audio):
+  the first version took ~5.6 s because DTX silence frames were not sent (§4.3). After fixing that: server VAD 500 ms +
+  default reasoning ≈ 1.47 s; `reasoning.effort=minimal` ≈ 1.29 s; silence 300 ms ≈ 1.41 s; both ≈ 1.19 s; semantic VAD
+  "high" ≈ 1.77 s (slower). Defaults chosen: server VAD with `silence_duration_ms` 400 and `reasoning.effort` **low**
+  (the API default; `minimal` is ~0.2 s faster but was not adopted). Both are minter settings, set in its ConfigMap and
+  changeable without an app release: `LEXI_VAD_SILENCE_MS`, `LEXI_REASONING_EFFORT`.
 
 ### 2.2 Screen (single Activity, portrait + landscape)
 - Full-screen `SurfaceView` with the visual.
 - Overlay buttons (native Android `View`s, custom-drawn, large touch targets, content descriptions for accessibility):
   1. **Call / Hang up** (primary, centred bottom). Shows state: idle → connecting → live → ending.
-  2. **Mute mic** (toggle).
+  2. **Mute mic** (toggle). Works before the call too: muting first makes the call start muted
+     (the mic stays silent from the first frame).
   3. **Audio route** (cycles available outputs: Earpiece → Speaker → Bluetooth/Wired, showing only available ones; icon reflects current route).
   4. **Visual mode** (Fluid ↔ Fractal).
 - Small status line (one text line) for errors such as "No network" or "Microphone permission needed".
+- A one-line **cost readout** for the current call (see §2.6).
+- A **voice selector** at the top of the screen (the bottom is already busy): a pill showing the current voice that
+  opens a popup menu with the selectable voices (§2.1). The status line sits under it.
 - Gestures:
   - Fluid mode: touch/drag injects force and dye.
   - Fractal mode: drag to pan, pinch to zoom, double-tap to reset.
@@ -62,8 +92,12 @@ the current official docs before implementing them.
 - **Fractal**: Mandelbrot/Julia in one fragment shader with smooth colouring; fp32 precision,
   so zoom is clamped (~1e5). Deep zoom (perturbation) is out of scope for v1.
 - **Audio reactivity**: two values passed in as shader uniforms each frame:
-  `mic_level` and `bot_level` (smoothed RMS, 0..1). The bot voice drives energy/colour;
-  the user voice drives a secondary effect.
+  `mic_level` and `bot_level` (smoothed RMS, 0..1). The visuals are **calm by default**: when nothing is said, and
+  while the *user* speaks, they animate gently (slow flow, slow colour drift; `mic_level` may only nudge that calm
+  motion a little). They **shimmer and distort in proportion to what the bot says**: `bot_level` scales the amplitude
+  of the shimmer/distortion (fluid: turbulence, vorticity and dye brightness; fractal: palette shimmer and a warp of
+  the coordinates). Silence from the bot settles them back to calm. Use fast-attack/slow-release smoothing so the
+  motion follows the voice without flicker.
 - Frame pacing via `AChoreographer`; target 60 fps, adaptive quality (drop sim resolution
   if frame time > 14 ms for 1 s).
 - Rendering **stops entirely** when the surface is destroyed or the Activity is not visible.
@@ -80,14 +114,46 @@ the current official docs before implementing them.
 5. Network change (Wi-Fi ↔ cellular) → automatic reconnect with a **new** ephemeral key
    (max 3 attempts, backoff 0.5 s/1 s/2 s). The conversation context is lost on reconnect in v1.
 
+### 2.6 Running call cost
+The app shows what the current call has cost so far. The server reports exactly what it bills in the `usage` of each
+`response.done` event ("Usage statistics for the Response, this will correspond to billing"), so the figure is the sum
+of those usages priced with a **price table built into the app**.
+
+- **Prices** (USD per 1M tokens, `gpt-realtime-2.1-mini`, Realtime API, standard tier; verified 2026-11-21 on
+  <https://developers.openai.com/api/docs/pricing>, "Realtime & Audio"):
+
+  | Modality | Input | Cached input | Output |
+  |---|---|---|---|
+  | Audio | $10.00 | $0.30 | $20.00 |
+  | Text | $0.60 | $0.06 | $2.40 |
+  | Image | $0.80 | $0.08 | not listed |
+
+  Not in the table, deliberately: batch/flex/priority tiers (none are listed for this model) and the 10 % regional
+  processing uplift (we use the default endpoint). Input audio transcription is billed separately by OpenAI, so it
+  stays **off** (it is off by default); enabling it would make the readout too low.
+- **Formula** per `response.done`: `usage.input_token_details` holds the totals per modality and
+  `cached_tokens_details` the cached **subset** of each, so
+  `cost = Σ_modality (total − cached) × input_rate + cached × cached_rate + Σ output_tokens × output_rate`
+  (output has only text and audio). Worked example from OpenAI's cost guide (text in 119 of which 64 cached, audio in 13,
+  text out 30, audio out 91): 55 × 0.60 + 64 × 0.06 + 13 × 10 + 30 × 2.40 + 91 × 20 = 2058.84 µ$ ≈ $0.00206.
+- **Granularity:** usage only arrives when a response completes, so the readout steps up after each reply. Listening
+  is free until a response is created: VAD filters empty audio, and user audio is 1 token per 100 ms, assistant audio 1
+  token per 50 ms.
+- **Per call, across reconnects:** the total keeps accumulating if the call reconnects (billing does too), and resets
+  when a new call starts. It stays on screen after hang-up until the next call.
+- **Unknown model:** the minter returns the model it used. If it is not in the built-in table (for example a changed
+  `LEXI_MODEL`), the readout is hidden rather than wrong.
+- **Display:** US dollars, four decimals below $1 (`$0.0123`), two above. An estimate to be compared with the OpenAI
+  usage dashboard; the table carries a `VERIFIED_ON` date and must be re-checked when prices or the model change.
+
 ---
 
 ## 3. Non-functional requirements
 
 | ID | Requirement |
 |---|---|
-| N1 | **Size**: Play download < **6 MB** (arm64-v8a). Rust `.so` < 4 MB stripped. No AndroidX Compose, no Kotlin coroutines library unless justified; only `androidx.core` allowed. |
-| N2 | **minSdk 31** (Android 12; needed for `setCommunicationDevice`), **targetSdk** = current Google Play requirement **[VERIFY]**. ABIs: `arm64-v8a` (required), `armeabi-v7a` (optional build flag). |
+| N1 | **Size**: release APK < **6 MB** (arm64-v8a). Rust `.so` < 4 MB stripped. No AndroidX Compose, no Kotlin coroutines library unless justified; only `androidx.core` allowed. |
+| N2 | **minSdk 31** (Android 12; needed for `setCommunicationDevice`), **targetSdk** 36 (the current Play requirement, verified 2026-11-21; not mandatory for a sideloaded app, but there is no reason to run in older compatibility modes). ABIs: `arm64-v8a` (required), `armeabi-v7a` (optional build flag). |
 | N3 | **Latency**: tap-to-first-audio < 2.5 s on 4G (excluding model think time). Mouth-to-ear added by the client < 80 ms (20 ms frames + ≤ 60 ms playout buffer). |
 | N4 | **CPU/battery**: during a call with the screen off, app CPU < 5 % of one big core on a mid-range device; no rendering, no busy loops. |
 | N5 | **Robustness**: no crash on permission denial, airplane mode, BT headset connect/disconnect mid-call, or the minter being unreachable. Rust panics must not cross FFI (`catch_unwind` at every JNI entry point); `panic = "abort"` only in release, after FFI guards. |
@@ -142,12 +208,14 @@ the current official docs before implementing them.
 init(context, callback: NativeCallback)               // once, from Application
 surfaceCreated(surface), surfaceChanged(w, h), surfaceDestroyed()
 setVisualMode(mode: Int), touch(action, pointerId, x, y), pinch(scale, fx, fy)
-startCall(minterUrl: String, installIdHash: String)   // runs async, reports via callback
+startCall(minterUrl: String, installIdHash: String, attestKey: String)   // runs async, reports via callback;
+                                                      // attestKey = build-time shared key ("" = none), see §5.4
 endCall()
 setMuted(muted: Boolean)
 onAudioRouteChanged()                                 // restart AAudio streams if needed
 onNetworkChanged()                                    // triggers reconnect if in call
 NativeCallback.onState(state: Int, detail: String?)   // Idle/Connecting/Live/Reconnecting/Ended/Error
+NativeCallback.onCost(microUsd: Long)                 // running cost of the current call, USD x 1e-6 (see §2.6)
 ```
 
 ### 4.3 WebRTC / OpenAI specifics
@@ -162,12 +230,15 @@ NativeCallback.onState(state: Int, detail: String?)   // Idle/Connecting/Live/Re
 - Data-channel events handled in v1:
   - `session.created` / `session.updated` → log only.
   - `input_audio_buffer.speech_started` → **flush the local playout buffer** (barge-in).
-  - `response.done` → record `usage` for debug cost logging.
+  - `response.done` → add `usage` to the running call cost (§2.6) and log the token counts (never content).
   - `error` → surface to UI and end the call if fatal.
 - Audio: capture 48 kHz mono, `AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION`,
   `AAUDIO_USAGE_VOICE_COMMUNICATION`, `AAUDIO_CONTENT_TYPE_SPEECH`, performance mode
   low-latency. If the device gives a different rate, resample (`rubato`) to 48 kHz.
-- Opus encoder: VOIP application, 24–32 kbps, in-band FEC on, DTX on (silence costs nothing).
+- Opus encoder: VOIP application, 32 kbps, complexity 5, in-band FEC on, DTX on. **DTX frames are still sent**:
+  while the user is silent the encoder emits 1–2 byte "silence" frames, and withholding them made the server's VAD
+  wait seconds to notice the end of the user's turn (reply latency 5.6 s instead of 1.5 s). Sent, they cost ~1 kB/s.
+  While muted nothing is encoded or sent (the RTP clock keeps running).
 
 ---
 
@@ -182,9 +253,10 @@ configuration (model, instructions, voice, turn detection) fixed server-side.
 POST /v1/call-token
   Headers: X-Lexi-Install: <sha256(install-id) hex>
            X-Lexi-Attest: <app attestation token>          (see 5.4)
-  Body: {}   (optional: {"locale":"en"})
+  Body: {}   (optional: {"voice":"cedar","locale":"en"}; voice must be one of LEXI_VOICES)
   200 → {"token":"ek_...","expires_at":<unix>,"model":"gpt-realtime-2.1-mini"}
-  401 attestation failed · 429 rate limited (Retry-After) · 502 upstream error · 503 not ready
+  400 invalid body / unknown voice · 401 attestation failed · 429 rate limited (Retry-After) ·
+  502 upstream error · 503 not ready
 GET /healthz   (liveness, no dependencies)
 GET /readyz    (ready once config is loaded and the key is present)
 GET /metrics   (Prometheus; on a separate port 9090)
@@ -200,7 +272,8 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
 - Rust, `tokio` + `axum`, `reqwest` (rustls, no OpenSSL), `serde`, `tracing` + JSON logs,
   `metrics` + `metrics-exporter-prometheus`, `tower-http` (timeouts, request IDs, body limit).
 - Config from env (12-factor): `OPENAI_API_KEY` (from a Secret), `LEXI_MODEL`,
-  `LEXI_VOICE`, `LEXI_INSTRUCTIONS_FILE` (mounted ConfigMap), `LEXI_TOKEN_TTL_SECS`,
+  `LEXI_VOICE` (default), `LEXI_VOICES` (allowed list), `LEXI_REASONING_EFFORT`, `LEXI_VAD_SILENCE_MS`,
+  `LEXI_INSTRUCTIONS_FILE` (mounted ConfigMap), `LEXI_TOKEN_TTL_SECS`,
   `LEXI_RATE_PER_INSTALL` (default 30/hour), `LEXI_RATE_PER_IP` (default 120/hour),
   `LEXI_ATTEST_MODE` (`off` | `shared-key` | `play-integrity`).
 - Rate limiting: in-memory per replica in v1 (`governor`); optional Redis backend behind a feature flag.
@@ -211,10 +284,15 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
 
 ### 5.4 Client attestation (abuse protection)
 - `off`: development only.
-- `shared-key`: the app sends an HMAC of a timestamp with a build-time key. Weak (extractable), MVP only.
-- `play-integrity` (production): the app requests a Play Integrity token with a nonce
-  derived from the request; the minter verifies it via Google's API and requires
-  `PLAY_RECOGNIZED` + `MEETS_DEVICE_INTEGRITY` **[VERIFY current verdict names]**.
+- `shared-key`: the app sends `X-Lexi-Attest: <unix-ts>.<hex(hmac_sha256(key, ts))>` (±300 s skew) with a
+  build-time key, computed fresh for every token request (so reconnects never reuse a stale timestamp). The core
+  computes it from the `attestKey` passed to `startCall`. Weak (the key ships in the app), MVP only.
+- `shared-key` is the **production mode** for this project: the app is sideloaded for the author and a few
+  friends, so a leaked key is a manageable event. Rotation: replace the `lexi-attest-key` Secret, restart the
+  minter, rebuild the APK; old builds then get 401 until updated. If one friend's copy leaks or someone leaves,
+  per-friend keys (several accepted keys on the minter) are the next step.
+- `play-integrity`: **not planned** (it only works for apps distributed through Google Play). The stub behind the
+  `play-integrity` cargo feature is unused and may be deleted.
 
 ### 5.5 Kubernetes
 - Manifests with **kustomize** in `deploy/k8s/` (`base/` + `overlays/dev`, `overlays/prod`):
@@ -282,7 +360,7 @@ lexi/
   `cargo ndk -t arm64-v8a --platform 31 -o app/src/main/jniLibs build -p lexi-core --release`
   before `preBuild`.
 - Release profile for core: `opt-level="z"`, `lto="fat"`, `codegen-units=1`, `strip=true`,
-  `panic="abort"`. R8 enabled for Kotlin. Output an AAB.
+  `panic="abort"`. R8 enabled for Kotlin. Output a signed APK (`apksigner`) for sideloading.
 - Lints: `cargo clippy -D warnings`, `cargo fmt --check`, `cargo deny` (licences + advisories).
 
 ## 9. Testing
@@ -303,6 +381,6 @@ lexi/
 4. Switch between speaker, earpiece and BT earbuds mid-call without dropping the call.
 5. Toggle Wi-Fi off mid-call → reconnects within 5 s.
 6. Visuals at ≥ 55 fps on a mid-range device; rendering stops when the screen is off.
-7. AAB download size < 6 MB.
+7. Release APK size < 6 MB.
 8. Minter: `kubectl apply -k deploy/k8s/overlays/dev` works on a kind cluster; p99 latency < 400 ms
    (dominated by upstream); no secrets in the repo; image runs as non-root.

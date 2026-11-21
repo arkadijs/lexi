@@ -18,6 +18,7 @@
 //!
 //! Tokens and keys are held in [`Secret`], whose `Debug` is redacted. Never log them.
 
+pub mod attest;
 pub mod events;
 
 pub use events::{parse_event, ServerEvent, Usage};
@@ -100,18 +101,27 @@ struct MinterResponse {
     model: String,
 }
 
-/// Ask the minter for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID.
+/// Ask the minter for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID;
+/// `voice` is one of the minter's allowed voices (`None` = the minter's default).
 pub fn mint_from_minter(
     minter_url: &str,
     install_hash: &str,
     attest: Option<&str>,
+    voice: Option<&str>,
 ) -> Result<MintedToken, OpenAiError> {
     let url = format!("{}/v1/call-token", minter_url.trim_end_matches('/'));
     let mut req = agent().post(&url).header("X-Lexi-Install", install_hash);
     if let Some(a) = attest {
         req = req.header("X-Lexi-Attest", a);
     }
-    let mut resp = req.send("{}").map_err(map_err)?;
+    let body = match voice {
+        Some(v) => serde_json::json!({ "voice": v }).to_string(),
+        None => "{}".to_owned(),
+    };
+    let mut resp = req
+        .header("Content-Type", "application/json")
+        .send(body)
+        .map_err(map_err)?;
     let r: MinterResponse = resp
         .body_mut()
         .read_json()
@@ -132,24 +142,70 @@ struct SecretResponse {
     expires_at: i64,
 }
 
+/// Session options for [`mint_with_dev_key`] (development and measurement only; deployed sessions are
+/// configured by the minter). `None` keeps the API default.
+#[derive(Debug, Clone)]
+pub struct DevSession {
+    pub voice: String,
+    pub instructions: String,
+    /// server_vad `silence_duration_ms` (API default 500).
+    pub silence_ms: Option<u32>,
+    /// Use `semantic_vad` with this eagerness (`low`/`medium`/`high`/`auto`) instead of server_vad.
+    pub eagerness: Option<String>,
+    /// `session.reasoning.effort` (`minimal`/`low`/`medium`/`high`/`xhigh`).
+    pub reasoning_effort: Option<String>,
+}
+
+impl Default for DevSession {
+    fn default() -> Self {
+        Self {
+            voice: "cedar".into(),
+            instructions: "You are Lexi, a friendly, concise vocabulary coach. Keep replies to one to three sentences.".into(),
+            silence_ms: None,
+            eagerness: None,
+            reasoning_effort: None,
+        }
+    }
+}
+
+impl DevSession {
+    fn body(&self) -> serde_json::Value {
+        let turn_detection = match &self.eagerness {
+            Some(e) => {
+                serde_json::json!({ "type": "semantic_vad", "eagerness": e, "interrupt_response": true })
+            }
+            None => {
+                let mut t = serde_json::json!({ "type": "server_vad", "interrupt_response": true });
+                if let Some(ms) = self.silence_ms {
+                    t["silence_duration_ms"] = ms.into();
+                }
+                t
+            }
+        };
+        let mut session = serde_json::json!({
+            "type": "realtime",
+            "model": MODEL,
+            "instructions": self.instructions,
+            "audio": {
+                "output": { "voice": self.voice },
+                "input": { "turn_detection": turn_detection }
+            }
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            session["reasoning"] = serde_json::json!({ "effort": effort });
+        }
+        serde_json::json!({ "expires_after": { "anchor": "created_at", "seconds": 60 }, "session": session })
+    }
+}
+
 /// Development only: mint directly with an API key (from the environment, never a file).
 pub fn mint_with_dev_key(
     base: &str,
     api_key: &Secret,
     install_hash: &str,
+    opts: &DevSession,
 ) -> Result<MintedToken, OpenAiError> {
-    let body = serde_json::json!({
-        "expires_after": { "anchor": "created_at", "seconds": 60 },
-        "session": {
-            "type": "realtime",
-            "model": MODEL,
-            "instructions": "You are Lexi, a friendly, concise vocabulary coach. Keep replies to one to three sentences.",
-            "audio": {
-                "output": { "voice": "marin" },
-                "input": { "turn_detection": { "type": "server_vad", "interrupt_response": true } }
-            }
-        }
-    });
+    let body = opts.body();
     let url = format!("{}/v1/realtime/client_secrets", base.trim_end_matches('/'));
     let mut resp = agent()
         .post(&url)
@@ -273,7 +329,7 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        let t = mint_from_minter(&url, &"a".repeat(64), None).unwrap();
+        let t = mint_from_minter(&url, &"a".repeat(64), None, None).unwrap();
         assert_eq!(
             (t.token.expose(), t.expires_at, t.model.as_str()),
             ("ek_x", 123, "gpt-realtime-2.1-mini")
@@ -281,5 +337,70 @@ mod tests {
         let req = h.join().unwrap().to_ascii_lowercase();
         assert!(req.starts_with("post /v1/call-token "));
         assert!(req.contains(&format!("x-lexi-install: {}", "a".repeat(64))));
+        assert!(req.ends_with("{}"), "no voice requested: empty JSON object");
+    }
+
+    #[test]
+    fn minter_fetch_sends_the_requested_voice() {
+        let body = r#"{"token":"ek_x","expires_at":1,"model":"gpt-realtime-2.1-mini"}"#;
+        let resp: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
+        );
+        let (url, h) = serve_once(resp);
+        mint_from_minter(&url, &"b".repeat(64), Some("x-att"), Some("cedar")).unwrap();
+        let req = h.join().unwrap().to_ascii_lowercase();
+        assert!(req.contains("content-type: application/json"));
+        assert!(req.contains("x-lexi-attest: x-att"));
+        assert!(req.ends_with(r#"{"voice":"cedar"}"#), "{req}");
+    }
+}
+
+#[cfg(test)]
+mod dev_session_tests {
+    use super::*;
+
+    #[test]
+    fn default_body_matches_the_documented_shape() {
+        let b = DevSession::default().body();
+        assert_eq!(b["session"]["model"], "gpt-realtime-2.1-mini");
+        assert_eq!(b["session"]["audio"]["output"]["voice"], "cedar");
+        assert_eq!(
+            b["session"]["audio"]["input"]["turn_detection"]["type"],
+            "server_vad"
+        );
+        assert!(b["session"].get("reasoning").is_none());
+        assert!(b["session"]["audio"]["input"]["turn_detection"]
+            .get("silence_duration_ms")
+            .is_none());
+    }
+
+    #[test]
+    fn options_are_applied() {
+        let b = DevSession {
+            voice: "cedar".into(),
+            silence_ms: Some(250),
+            reasoning_effort: Some("minimal".into()),
+            ..DevSession::default()
+        }
+        .body();
+        assert_eq!(b["session"]["audio"]["output"]["voice"], "cedar");
+        assert_eq!(
+            b["session"]["audio"]["input"]["turn_detection"]["silence_duration_ms"],
+            250
+        );
+        assert_eq!(b["session"]["reasoning"]["effort"], "minimal");
+        let s = DevSession {
+            eagerness: Some("high".into()),
+            ..DevSession::default()
+        }
+        .body();
+        assert_eq!(
+            s["session"]["audio"]["input"]["turn_detection"]["type"],
+            "semantic_vad"
+        );
+        assert_eq!(
+            s["session"]["audio"]["input"]["turn_detection"]["eagerness"],
+            "high"
+        );
     }
 }

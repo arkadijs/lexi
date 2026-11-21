@@ -73,7 +73,10 @@ class CallService : Service() {
 
         CallModel.addListener(listener)
         CallModel.begin()
-        NativeBridge.startCall(BuildConfig.MINTER_URL, InstallId.hash(this))
+        NativeBridge.setMuted(CallModel.muted) // honour "muted before the call"
+        NativeBridge.startCall(
+            BuildConfig.MINTER_URL, InstallId.hash(this), BuildConfig.ATTEST_KEY, Voices.current(this).id
+        )
     }
 
     private fun hangUp() {

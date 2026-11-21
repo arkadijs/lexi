@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Build the Android app on remote (x86_64; Google's build tools don't run on this aarch64 dev box).
 #   scripts/android-remote.sh [gradle args]      # default: assembleDebug; APK is copied to dist/
+# Build-time settings (see android/app/build.gradle.kts):
+#   LEXI_MINTER_URL=https://lexi-minter.example.com   # default: debug http://localhost:8080 (adb reverse), release = remote
+#   LEXI_ATTEST_FROM_CLUSTER=1                        # read the shared attestation key from the cluster Secret
+#   LEXI_COLD=1                                       # throwaway target volume = full dependency compile (use with --rerun-tasks)
+# Every build prints a [measure] summary of how many cores it really kept busy (scripts/measure-lib.sh).
 # Ships the working tree (never .envrc/.git/target), runs the builder image, copies results back.
 set -euo pipefail
 HOST="${LEXI_DEPLOY_HOST:-deploy.example.com}"
@@ -22,10 +27,31 @@ tar --exclude=.git --exclude=target --exclude=.envrc --exclude='.env*' --exclude
 
 # Use every core of the build host (remote has 80): no --cpus limit, and all parallelism knobs set explicitly.
 JOBS="$(ssh "$HOST" nproc)"
+ENVFILE=""
+if [ "${LEXI_ATTEST_FROM_CLUSTER:-}" = 1 ]; then
+  # Via process substitution + printf builtin: the key never appears in any command line.
+  ENVFILE="--env-file <(printf 'LEXI_ATTEST_KEY=%s\\n' \"\$(kubectl -n lexi get secret lexi-attest-key -o jsonpath='{.data.LEXI_ATTEST_SHARED_KEY}' | base64 -d)\")"
+fi
+MINTER_ENV=""
+[ -n "${LEXI_MINTER_URL:-}" ] && MINTER_ENV="-e LEXI_MINTER_URL=$LEXI_MINTER_URL"
 echo ">> building with $JOBS jobs (gradle ${*:-assembleDebug})"
-ssh "$HOST" "docker run --rm -e LEXI_UID=\$(id -u) -e LEXI_GID=\$(id -g) -e LEXI_JOBS=$JOBS -e CARGO_BUILD_JOBS=$JOBS -e CMAKE_BUILD_PARALLEL_LEVEL=$JOBS \
-  -e MAKEFLAGS=-j$JOBS -v $SRC:/work -v lexi-gradle:/root/.gradle -v lexi-target:/work/target \
-  -w /work lexi-android-builder scripts/android-build.sh $*"
+# The remote command is a script on stdin (measure-lib.sh + one measured docker run), so the env-file
+# process substitution needs no extra quoting. LEXI_COLD=1 uses a throwaway target volume: a full
+# compile of every dependency, which is what shows how parallel the build can really be.
+TARGET_VOL=lexi-target
+if [ "${LEXI_COLD:-}" = 1 ]; then TARGET_VOL=lexi-target-cold; ssh "$HOST" "docker volume rm -f $TARGET_VOL >/dev/null"; fi
+{
+  cat scripts/measure-lib.sh
+  cat <<REMOTE
+measure_run "android build (gradle ${*:-assembleDebug})" docker run --rm $MINTER_ENV $ENVFILE -e LEXI_UID=\$(id -u) -e LEXI_GID=\$(id -g) -e LEXI_JOBS=$JOBS \\
+  -e CARGO_BUILD_JOBS=$JOBS -e CMAKE_BUILD_PARALLEL_LEVEL=$JOBS -e MAKEFLAGS=-j$JOBS \\
+  -v $SRC:/work -v lexi-gradle:/root/.gradle -v lexi-android:/root/.android -v $TARGET_VOL:/work/target \\
+  -w /work lexi-android-builder scripts/android-build.sh $*
+rc=\$?
+[ "$TARGET_VOL" = lexi-target-cold ] && docker volume rm -f $TARGET_VOL >/dev/null
+exit \$rc
+REMOTE
+} | ssh "$HOST" bash -s
 
 echo ">> fetching results"
 mkdir -p dist

@@ -53,7 +53,12 @@ pub struct OpenAiClient {
     http: reqwest::Client,
     url: String,
     api_key: Option<Secret>,
-    body: serde_json::Value,
+    model: String,
+    instructions: String,
+    default_voice: String,
+    ttl_secs: u32,
+    reasoning_effort: Option<String>,
+    vad_silence_ms: Option<u32>,
 }
 
 impl OpenAiClient {
@@ -61,25 +66,40 @@ impl OpenAiClient {
         let http = reqwest::Client::builder()
             .timeout(cfg.upstream_timeout)
             .build()?;
-        let body = json!({
-            "expires_after": { "anchor": "created_at", "seconds": cfg.token_ttl_secs },
-            "session": {
-                "type": "realtime",
-                "model": cfg.model,
-                "instructions": cfg.instructions,
-                "audio": {
-                    "output": { "voice": cfg.voice },
-                    "input": {
-                        "turn_detection": { "type": "server_vad", "interrupt_response": true }
-                    }
-                }
-            }
-        });
         Ok(Self {
             http,
             url: format!("{}/v1/realtime/client_secrets", cfg.openai_base_url),
             api_key: cfg.api_key.clone(),
-            body,
+            model: cfg.model.clone(),
+            instructions: cfg.instructions.clone(),
+            default_voice: cfg.voice.clone(),
+            ttl_secs: cfg.token_ttl_secs,
+            reasoning_effort: cfg.reasoning_effort.clone(),
+            vad_silence_ms: cfg.vad_silence_ms,
+        })
+    }
+
+    /// Request body for `POST /v1/realtime/client_secrets` (shape verified against the API reference).
+    fn body(&self, voice: &str) -> serde_json::Value {
+        let mut turn_detection = json!({ "type": "server_vad", "interrupt_response": true });
+        if let Some(ms) = self.vad_silence_ms {
+            turn_detection["silence_duration_ms"] = ms.into();
+        }
+        let mut session = json!({
+            "type": "realtime",
+            "model": self.model,
+            "instructions": self.instructions,
+            "audio": {
+                "output": { "voice": voice },
+                "input": { "turn_detection": turn_detection }
+            }
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            session["reasoning"] = json!({ "effort": effort });
+        }
+        json!({
+            "expires_after": { "anchor": "created_at", "seconds": self.ttl_secs },
+            "session": session
         })
     }
 
@@ -88,10 +108,16 @@ impl OpenAiClient {
     }
 
     /// Mint one secret. One retry on connect/timeout errors and 5xx.
-    pub async fn mint(&self, install_hash: &str) -> Result<ClientSecret, UpstreamError> {
+    /// `voice` must already be validated against the allowlist; `None` uses the configured default.
+    pub async fn mint(
+        &self,
+        install_hash: &str,
+        voice: Option<&str>,
+    ) -> Result<ClientSecret, UpstreamError> {
         let Some(key) = &self.api_key else {
             return Err(UpstreamError::Unavailable);
         };
+        let body = self.body(voice.unwrap_or(&self.default_voice));
         let mut last = UpstreamError::Unavailable;
         for _attempt in 0..2 {
             let sent = self
@@ -99,7 +125,7 @@ impl OpenAiClient {
                 .post(&self.url)
                 .bearer_auth(key.expose())
                 .header("OpenAI-Safety-Identifier", install_hash)
-                .json(&self.body)
+                .json(&body)
                 .send()
                 .await;
             let resp = match sent {

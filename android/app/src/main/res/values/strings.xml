@@ -24,4 +24,23 @@
     <string name="notif_mute">Mute</string>
     <string name="notif_unmute">Unmute</string>
     <string name="notif_hangup">Hang up</string>
+    <string name="lb_call">Call</string>
+    <string name="lb_hangup">Hang up</string>
+    <string name="lb_mute">Mute</string>
+    <string name="lb_muted">Muted</string>
+    <string name="lb_earpiece">Earpiece</string>
+    <string name="lb_speaker">Speaker</string>
+    <string name="lb_wired">Headset</string>
+    <string name="lb_bluetooth">Bluetooth</string>
+    <string name="lb_fluid">Fluid</string>
+    <string name="lb_fractal">Fractal</string>
+    <string name="st_auth">Not authorised. Update the app</string>
+    <string name="st_rate">Too many calls. Try again later</string>
+    <string name="st_service">Service unavailable. Try again</string>
+    <string name="st_audio">Audio device problem</string>
+    <string name="st_remote">Call ended</string>
+    <string name="st_max_session">Session time limit reached</string>
+    <string name="cd_voice">Voice: %1$s. Tap to change</string>
+    <string name="st_voice_next">The new voice applies to the next call</string>
+    <string name="cd_cost">Cost of this call so far: %1$s</string>
 </resources>

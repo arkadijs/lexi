@@ -37,6 +37,10 @@ fn router(cfg: Config) -> axum::Router {
 }
 
 fn post(install: Option<&str>, attest: Option<&str>, ip: &str) -> Request<Body> {
+    post_body("{}", install, attest, ip)
+}
+
+fn post_body(body: &str, install: Option<&str>, attest: Option<&str>, ip: &str) -> Request<Body> {
     let mut b = Request::post("/v1/call-token");
     if let Some(i) = install {
         b = b.header("x-lexi-install", i);
@@ -44,7 +48,7 @@ fn post(install: Option<&str>, attest: Option<&str>, ip: &str) -> Request<Body> 
     if let Some(a) = attest {
         b = b.header("x-lexi-attest", a);
     }
-    let mut req = b.body(Body::from("{}")).unwrap();
+    let mut req = b.body(Body::from(body.to_owned())).unwrap();
     let addr: SocketAddr = format!("{ip}:5555").parse().unwrap();
     req.extensions_mut().insert(ConnectInfo(addr));
     req
@@ -80,7 +84,11 @@ async fn success_returns_token_and_sends_documented_upstream_request() {
         .and(body_partial_json(serde_json::json!({
             "expires_after": {"anchor": "created_at", "seconds": 60},
             "session": {"type": "realtime", "model": "gpt-realtime-2.1-mini",
-                        "audio": {"output": {"voice": "marin"}}}
+                        "reasoning": {"effort": "low"},
+                        "audio": {"output": {"voice": "cedar"},
+                                  "input": {"turn_detection": {"type": "server_vad",
+                                                               "silence_duration_ms": 400,
+                                                               "interrupt_response": true}}}}
         })))
         .respond_with(ok_upstream())
         .expect(1)
@@ -286,4 +294,65 @@ async fn health_and_readiness() {
         send(&r, post(Some(INSTALL), None, "10.0.0.1")).await.0,
         StatusCode::SERVICE_UNAVAILABLE
     );
+}
+
+#[tokio::test]
+async fn requested_voice_is_forwarded_upstream() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({
+            "session": {"audio": {"output": {"voice": "cedar"}}}
+        })))
+        .respond_with(ok_upstream())
+        .expect(1)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let (status, ..) = send(
+        &r,
+        post_body(r#"{"voice":"cedar"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn unknown_voice_is_rejected_without_calling_upstream() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .expect(0)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    for body in [
+        r#"{"voice":"hal9000"}"#,
+        r#"{"voice":""}"#,
+        r#"{"voice":"MARIN"}"#,
+    ] {
+        let (status, _, text) = send(&r, post_body(body, Some(INSTALL), None, "10.0.0.1")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(text.contains("unknown voice"));
+    }
+}
+
+#[tokio::test]
+async fn voice_allowlist_is_configurable() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[("LEXI_VOICES", "marin,cedar")]));
+    let (ok, ..) = send(
+        &r,
+        post_body(r#"{"voice":"cedar"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    let (no, ..) = send(
+        &r,
+        post_body(r#"{"voice":"coral"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!((ok, no), (StatusCode::OK, StatusCode::BAD_REQUEST));
 }

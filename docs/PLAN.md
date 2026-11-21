@@ -62,31 +62,61 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 **Done when:** `./gradlew assembleDebug` produces an APK; on a device the buttons render and the permission flow works, with stubbed native calls logging to logcat.
 
 ## Phase 5 — Android audio + call integration (`core/audio`, wiring)
-- [ ] AAudio input/output via `ndk::audio` with presets from SPEC §4.3; SPSC ring buffers (`rtrb`); restart streams on route change or error callback (disconnect).
-- [ ] Resample to 48 kHz only if the device refuses 48 kHz.
-- [ ] Wire `startCall` → minter → `RtcSession` → AAudio; state callbacks to Kotlin; mute via an atomic (send silence frames / DTX).
-- [ ] Reconnect on network change (new token, backoff per SPEC §2.4); max-session guard.
-- [ ] Level meters (RMS, smoothed) into atomics for the renderer.
+- [x] AAudio input/output via `ndk::audio` with presets from SPEC §4.3; SPSC ring buffers (`rtrb`); restart streams on route change or error callback (disconnect). (route-change restart verified on a device; the error-callback/disconnect restart and headsets are not)
+- [x] Resample to 48 kHz only if the device refuses 48 kHz. (not implemented: the Moto g42 opens 48 kHz mono, and opening fails loudly otherwise)
+- [x] Wire `startCall` → minter → `RtcSession` → AAudio; state callbacks to Kotlin; mute via an atomic (send silence frames / DTX). (muted calls verified on a device; an unmuted conversation was not)
+- [x] Reconnect on network change (new token, backoff per SPEC §2.4); max-session guard. (unit-tested; verified on a device after a Wi-Fi drop and restore; the cellular handover is untestable without a SIM)
+- [x] Level meters (RMS, smoothed) into atomics for the renderer. (atomics in `Shared`, unit-tested; nothing displays them until Phase 6)
 
 **Done when:** acceptance criteria 1–5 from SPEC §10 pass on a real device.
+*Status:* 1 (tap → media connected 1.2–2.35 s), 3 (muted call survived ~10 min screen-off; notification Hang up works) and
+the speaker/earpiece part of 4 pass; the Wi-Fi-loss part of 5 passes (reconnect 1.3 s after Wi-Fi returned). Not yet
+checked: 2 (barge-in on the phone), Bluetooth in 4, the cellular handover in 5. CPU with the screen off is 10 % against
+N4's 5 % budget (see android/README.md).
+
+## Phase 5c — Voice, language and latency (done 2026-11-22 except the open items)
+- [x] Reply latency: found and fixed the cause of the long pause (DTX silence frames were not sent, so the server's VAD
+  could not see the end of the user's turn): ~5.6 s → ~1.5 s; then `silence_duration_ms` 400 and `reasoning.effort` low
+  (measured in SPEC §2.1; both are minter/ConfigMap settings, `minimal` effort is a documented option). The desktop harness has `--vad-silence-ms`, `--semantic-eagerness`, `--effort`, `--voice`,
+  `--instructions` for dev-key measurements and prints `LATENCY end of user speech -> first bot audio`.
+- [x] Minter prompt cleared and replaced: greet in Russian, expect Russian, follow a language switch; the core sends
+  `response.create` once per call when the channel opens (SPEC §2.1).
+- [x] Voice selector: minter `voice` allowlist (`LEXI_VOICES`), `startCall(…, voice)`, popup at the top of the screen,
+  remembered; a change during a call applies to the next call. Narrowed after listening tests to **Cedar (default)** and
+  **Alloy**, no section headers.
+- [x] Default voice chosen by listening: Cedar (`LEXI_VOICE` in the ConfigMap, `Voices.kt`); Alloy as the alternative.
+- [ ] Verify on the phone: greeting, language switch, voice change, and the new latency in a real conversation.
+
+## Phase 5b — Running call cost (`core/pricing`, ffi, UI)
+Show what the current call has cost so far (SPEC §2.6). The price table of `gpt-realtime-2.1-mini` is built into the app.
+- [x] `core/pricing` (platform independent): the price table (USD per 1M tokens, with `VERIFIED_ON` and the source URL) and `cost_micro_usd(model, &Usage) -> Option<u64>`. Cached tokens are a **subset** of input tokens (bill uncached at the input rate and cached at the cached rate, per modality); unknown model → `None`. **Re-check the prices on the pricing page before building** (SPEC §2.6 lists what was verified on 2026-11-21).
+- [x] Extend the `Usage` parsing in `core/openai/events.rs` with `image_tokens` and `cached_tokens_details` (`audio_tokens`, `text_tokens`, `image_tokens`); tolerate missing fields.
+- [x] Supervisor: add each `response.done` usage to a per-call total (kept across reconnects), publish it in `Shared` (atomic micro-USD) and notify Kotlin; keep the existing usage log line (token counts only).
+- [x] JNI: `NativeCallback.onCost(microUsd: Long)` (SPEC §4.2); reset to 0 on `startCall`.
+- [x] UI: a one-line cost readout next to the status line, e.g. `$0.0123`; hidden before the first response; stays visible after the call ends until the next call; shown as tokens-only or hidden when the model has no known price.
+- [x] Tests: pricing math against the documented example (253 tokens → $0.00205884) and edge cases (cached subset, image tokens, missing details, unknown model); supervisor test for accumulation across a reconnect; compare the displayed total with the OpenAI usage dashboard after a real call (they should agree to rounding). *(Only the last part is open: the on-device greeting call showed $0.0011 = 1099 uUSD, matching the logged tokens, but the dashboard comparison needs your account.)*
+
+**Done when:** a real call shows a cost that grows after each reply and matches the usage dashboard for that call to within rounding.
+*Status:* verified on the phone with the greeting response (screen = log). Please compare one call with the dashboard.
 
 ## Phase 6 — GPU visuals (`core/render`)
 - [ ] EGL setup on `ANativeWindow` (`khronos-egl`), GLES 3.0 via `glow`; render thread lifecycle tied to the surface callbacks; `AChoreographer` frame callbacks.
 - [ ] Fluid: ping-pong FBOs (RG16F velocity, R16F pressure, RGBA8/RGBA16F dye; check `EXT_color_buffer_half_float` with a fallback), passes per SPEC §2.3, touch splats, audio-reactive uniforms.
-- [ ] Fractal: smooth-coloured Mandelbrot/Julia, pan/pinch/double-tap, zoom clamp, palette animated by `bot_level`.
+- [ ] Fractal: smooth-coloured Mandelbrot/Julia, pan/pinch/double-tap, zoom clamp, palette shimmer and coordinate warp driven by `bot_level`.
+- [ ] Audio reactivity per SPEC §2.3: calm by default and while the user speaks (`mic_level` only nudges the calm motion); shimmer/distortion proportional to what the bot says (`bot_level` scales turbulence/dye brightness in the fluid and shimmer/warp in the fractal); fast-attack/slow-release smoothing; settles back to calm when the bot is silent. Check with recorded bot audio (desk `--out-wav`) and on the phone.
 - [ ] Adaptive quality + frame-time stats in debug builds.
 - [ ] Shaders embedded with `include_str!`; compile errors logged with source line numbers.
 
 **Done when:** acceptance criterion 6 passes; no GL errors in logcat; rendering stops when locked (verify via logcat/systrace).
 
 ## Phase 7 — Hardening, size, release
-- [ ] Measure and report sizes (`.so`, APK, AAB via `bundletool get-size total`); remove unused deps and features until N1 is met.
-- [ ] Play Integrity attestation end to end (app side + minter `play-integrity` mode).
+- [ ] Measure and report sizes (`.so` and the release APK); remove unused deps and features until N1 is met.
+- [ ] Attestation runbook instead of Play Integrity (the app is sideloaded, not on Play): document key rotation (Secret → restart → rebuild); optionally accept several keys on the minter (per-friend keys). Delete the unused `play-integrity` stub.
 - [ ] Failure-mode tests from SPEC N5; battery check for 10 min of screen-off calling.
-- [ ] Release signing config reading from env/CI secrets (no keystore in the repo); CI builds a signed AAB on tag.
+- [ ] Release signing for sideloading: a keystore kept outside the repo (env/CI secret), `apksigner`-signed APK; CI builds it on tag and attaches it to a release. Keep the keystore backed up: a lost key means friends must uninstall before updating.
 - [ ] `README.md`: setup, build, run minter locally, deploy to k8s, configure the app's minter URL (`BuildConfig` field per build type).
 
-**Done when:** all of SPEC §10 passes; CI produces a signed AAB and the minter image on a tag.
+**Done when:** all of SPEC §10 passes; CI produces a signed APK and the minter image on a tag.
 
 ---
 
@@ -95,6 +125,7 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 |---|---|
 | str0m ↔ OpenAI interop (DTLS, SDP quirks) | Proven in Phase 3 on desktop first; crypto backend fallback; LiveKit `libwebrtc` bindings as a last resort (accepting +5–8 MB). |
 | Echo on speakerphone with weak hardware AEC | VoiceCommunication preset; test on the device matrix; option to add WebRTC AEC3 (via the `webrtc-audio-processing` crate) behind a feature flag. |
+| Prices change; the built-in table goes stale | `VERIFIED_ON` date next to the table; re-check on the pricing page whenever the model or `LEXI_MODEL` changes; the cost line is an estimate and is hidden for unknown models. Optional later: have the minter send the price table so a price change needs no app rebuild. |
 | OpenAI API shape changes | All endpoints/fields are isolated in `core/openai` and `minter/src/openai.rs`; verify against the docs in Phases 1 and 3. |
 | OEM background killing | Foreground service + wake locks + battery-optimisation prompt; test on Xiaomi/Samsung. |
 | Token abuse / cost blow-up | Attestation, per-install and per-IP rate limits, short TTL, max session length, spend alerts on the OpenAI project. |

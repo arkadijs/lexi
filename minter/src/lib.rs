@@ -53,8 +53,10 @@ impl AppState {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct TokenRequest {
-    #[allow(dead_code)] // accepted for forward compatibility; v1 is English only
+    #[allow(dead_code)] // accepted for forward compatibility
     locale: Option<String>,
+    /// One of the configured `LEXI_VOICES`; absent = the default voice.
+    voice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -124,8 +126,18 @@ async fn call_token_inner(
     if !state.openai.has_key() {
         return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
     }
-    if !body.is_empty() && serde_json::from_slice::<TokenRequest>(body).is_err() {
-        return err(StatusCode::BAD_REQUEST, "invalid body");
+    let request: TokenRequest = if body.is_empty() {
+        TokenRequest::default()
+    } else {
+        match serde_json::from_slice(body) {
+            Ok(r) => r,
+            Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
+        }
+    };
+    if let Some(v) = &request.voice {
+        if !state.cfg.voices.iter().any(|allowed| allowed == v) {
+            return err(StatusCode::BAD_REQUEST, "unknown voice");
+        }
     }
     let install = headers
         .get(INSTALL_HEADER)
@@ -149,7 +161,7 @@ async fn call_token_inner(
         return too_many("install", retry);
     }
 
-    match state.openai.mint(&install).await {
+    match state.openai.mint(&install, request.voice.as_deref()).await {
         Ok(secret) => Json(TokenResponse {
             token: secret.value.expose().to_owned(),
             expires_at: secret.expires_at,

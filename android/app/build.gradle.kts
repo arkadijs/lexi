@@ -8,6 +8,14 @@ plugins {
 val withArmv7 = providers.gradleProperty("withArmv7").isPresent
 val repoRoot = rootProject.projectDir.parentFile
 
+// Build-time settings (never committed): LEXI_MINTER_URL and LEXI_ATTEST_KEY from the environment or
+// -PlexiMinterUrl / -PlexiAttestKey. The attestation key ships inside the APK, so it is a weak
+// MVP measure only (SPEC §5.4).
+fun setting(env: String, prop: String, default: String): String =
+    providers.environmentVariable(env).orElse(providers.gradleProperty(prop)).getOrElse(default)
+fun quoted(v: String) = "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+val attestKey = setting("LEXI_ATTEST_KEY", "lexiAttestKey", "")
+
 val buildRust = tasks.register<Exec>("buildRust") {
     group = "build"
     description = "Builds lexi-core for Android with cargo-ndk"
@@ -46,11 +54,14 @@ android {
 
     buildTypes {
         debug {
-            // Android emulator -> host loopback; a local `cargo run -p lexi-minter`.
-            buildConfigField("String", "MINTER_URL", "\"http://10.0.2.2:8080\"")
+            // A local `cargo run -p lexi-minter` reached over `adb reverse tcp:8080 tcp:8080`
+            // (cleartext to localhost is allowed in debug only).
+            buildConfigField("String", "MINTER_URL", quoted(setting("LEXI_MINTER_URL", "lexiMinterUrl", "http://localhost:8080")))
+            buildConfigField("String", "ATTEST_KEY", quoted(attestKey))
         }
         release {
-            buildConfigField("String", "MINTER_URL", "\"https://lexi-minter.example.com\"")
+            buildConfigField("String", "MINTER_URL", quoted(setting("LEXI_MINTER_URL", "lexiMinterUrl", "https://lexi-minter.example.com")))
+            buildConfigField("String", "ATTEST_KEY", quoted(attestKey))
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

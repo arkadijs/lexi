@@ -20,17 +20,24 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone] [--prompt TEXT]
             [--exit-after-response] [--duration SECS] [--out-wav FILE] [--install-hash HEX64]
-  --minter URL            fetch an ephemeral token from lexi-minter
+  --minter URL            fetch an ephemeral token from lexi-minter (set LEXI_ATTEST_KEY in the
+                          environment if it runs in shared-key attestation mode)
   --dev-key               mint directly with OPENAI_API_KEY from the environment (development only)
   --headless              no mic/speaker; sends silence (or --tone) and discards/records playout
   --tone                  with --headless: send a 440 Hz tone as mic input
   --prompt TEXT           send a text user message and request a response (no mic needed)
+  --greet                 send response.create on open, as the app does (the prompt makes the model greet)
   --exit-after-response   exit after the first response.done
   --duration SECS         exit after SECS (default: run until Ctrl-C; 30 with --headless)
   --out-wav FILE          write received audio to a 48 kHz mono WAV (headless)
   --mic-wav FILE          with --headless: use this 48 kHz mono 16-bit WAV as mic input
   --mic-delay SECS        with --mic-wav: start feeding it after SECS (e.g. to interrupt the bot)
   --trace                 print mic/bot levels every 100 ms
+  --voice V               output voice (default: cedar with --dev-key, the minter's default with --minter)
+  --instructions TEXT     with --dev-key: system instructions
+  --vad-silence-ms N      with --dev-key: server_vad silence_duration_ms (API default 500)
+  --semantic-eagerness E  with --dev-key: use semantic_vad (low|medium|high|auto)
+  --effort E              with --dev-key: reasoning effort (minimal|low|medium|high|xhigh)
   --check-audio           open the mic and speaker streams for 1 s and report (no network, no token)";
 
 #[derive(Default)]
@@ -40,6 +47,8 @@ struct Args {
     headless: bool,
     tone: bool,
     prompt: Option<String>,
+    /// Send only `response.create` when the session opens (what the app does) so the model greets first.
+    greet: bool,
     exit_after_response: bool,
     duration: Option<u64>,
     out_wav: Option<String>,
@@ -48,6 +57,12 @@ struct Args {
     mic_delay: f32,
     trace: bool,
     check_audio: bool,
+    // --dev-key session tuning (measurement)
+    voice: Option<String>,
+    instructions: Option<String>,
+    silence_ms: Option<u32>,
+    eagerness: Option<String>,
+    effort: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -72,6 +87,18 @@ fn parse_args() -> Result<Args, String> {
                 a.mic_delay = val("--mic-delay")?.parse().map_err(|_| "bad --mic-delay")?
             }
             "--trace" => a.trace = true,
+            "--greet" => a.greet = true,
+            "--voice" => a.voice = Some(val("--voice")?),
+            "--instructions" => a.instructions = Some(val("--instructions")?),
+            "--vad-silence-ms" => {
+                a.silence_ms = Some(
+                    val("--vad-silence-ms")?
+                        .parse()
+                        .map_err(|_| "bad --vad-silence-ms")?,
+                )
+            }
+            "--semantic-eagerness" => a.eagerness = Some(val("--semantic-eagerness")?),
+            "--effort" => a.effort = Some(val("--effort")?),
             "--check-audio" => a.check_audio = true,
             "-h" | "--help" => return Err(USAGE.into()),
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
@@ -256,14 +283,36 @@ fn run() -> Result<(), String> {
         .unwrap_or_else(random_install_hash);
 
     let minted = if let Some(url) = &args.minter {
-        openai::mint_from_minter(url, &install_hash, None).map_err(|e| format!("minter: {e}"))?
+        // Deployed minters use `shared-key` attestation: the key comes from the environment only.
+        let attest = std::env::var("LEXI_ATTEST_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .and_then(|k| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                openai::attest::header(&openai::Secret::new(k), now)
+            });
+        openai::mint_from_minter(url, &install_hash, attest.as_deref(), args.voice.as_deref())
+            .map_err(|e| format!("minter: {e}"))?
     } else {
         let key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| "--dev-key needs OPENAI_API_KEY in the environment")?;
+        let mut opts = openai::DevSession::default();
+        if let Some(v) = &args.voice {
+            opts.voice = v.clone();
+        }
+        if let Some(i) = &args.instructions {
+            opts.instructions = i.clone();
+        }
+        opts.silence_ms = args.silence_ms;
+        opts.eagerness = args.eagerness.clone();
+        opts.reasoning_effort = args.effort.clone();
         openai::mint_with_dev_key(
             openai::OPENAI_BASE,
             &openai::Secret::new(key),
             &install_hash,
+            &opts,
         )
         .map_err(|e| format!("dev-key mint: {e}"))?
     };
@@ -289,6 +338,9 @@ fn run() -> Result<(), String> {
     let (session, mic, pcm) = RtcSession::start(RtcConfig::default(), &minted.token, handler)
         .map_err(|e| e.to_string())?;
 
+    if args.greet {
+        session.send_event(r#"{"type":"response.create"}"#.into());
+    }
     if let Some(p) = &args.prompt {
         session.send_event(
             serde_json::json!({"type":"conversation.item.create","item":{"type":"message","role":"user",
@@ -320,6 +372,9 @@ fn run() -> Result<(), String> {
     let mut exit_reason = "interrupted";
     let mut done_at: Option<Instant> = None;
     let mut quiet_since: Option<Instant> = None;
+    // Latency: end of the user's (WAV) speech -> first bot audio.
+    let mut last_voiced: Option<Instant> = None;
+    let mut first_audio_reported = false;
     while !stop.load(Ordering::SeqCst) {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             exit_reason = "duration elapsed";
@@ -359,6 +414,7 @@ fn run() -> Result<(), String> {
                         let energy: i64 = frame.iter().map(|&x| i64::from(x).pow(2)).sum::<i64>()
                             / FRAME_SAMPLES as i64;
                         if energy > 300 * 300 {
+                            last_voiced = Some(Instant::now());
                             if let Ok(mut began) = mic_began.lock() {
                                 began.get_or_insert_with(Instant::now);
                             }
@@ -380,6 +436,15 @@ fn run() -> Result<(), String> {
                     recorded.extend_from_slice(&out);
                 }
                 frames += 1;
+            }
+        }
+        if !first_audio_reported && session.levels.bot() > 0.02 {
+            if let Some(t) = last_voiced.filter(|t| t.elapsed() > Duration::from_millis(300)) {
+                first_audio_reported = true;
+                println!(
+                    "LATENCY end of user speech -> first bot audio: {} ms",
+                    t.elapsed().as_millis()
+                );
             }
         }
         if args.trace && last_trace.elapsed() >= Duration::from_millis(100) {

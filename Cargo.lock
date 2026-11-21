@@ -1551,13 +1551,16 @@ name = "lexi-core"
 version = "0.1.0"
 dependencies = [
  "android_logger",
+ "hmac",
  "if-addrs",
  "jni",
  "log",
+ "ndk",
  "opus",
  "rtrb",
  "serde",
  "serde_json",
+ "sha2",
  "str0m",
  "ureq",
 ]

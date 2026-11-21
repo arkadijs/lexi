@@ -3,9 +3,11 @@
 //! `openai`, `rtc`, `codec`, `jitter` and `state` are platform independent and also used by
 //! `devtools/desk`. `ffi`, `audio` and `render` are Android-only.
 
+pub mod call;
 pub mod codec;
 pub mod jitter;
 pub mod openai;
+pub mod pricing;
 pub mod rtc;
 pub mod state;
 

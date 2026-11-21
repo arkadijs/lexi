@@ -17,8 +17,11 @@ Port 8080: `POST /v1/call-token`, `/healthz`, `/readyz`. Port 9090: `/metrics`.
 |---|---|---|
 | `OPENAI_API_KEY` | – | Without it the service runs but `/readyz` and minting return 503. |
 | `LEXI_MODEL` | `gpt-realtime-2.1-mini` | |
-| `LEXI_VOICE` | `marin` | |
-| `LEXI_INSTRUCTIONS_FILE` | built-in persona | Mounted ConfigMap in k8s. |
+| `LEXI_VOICE` | `cedar` | Default voice when the app does not ask for one. |
+| `LEXI_VOICES` | all ten built-in voices | Voices the app may request via `{"voice":"cedar"}` in the token request; anything else is a 400. |
+| `LEXI_REASONING_EFFORT` | `low` | `session.reasoning.effort` (`minimal`/`low`/`medium`/`high`/`xhigh`), always sent explicitly; `default` = omit it and let the API choose (`low`). `minimal` measured ~0.2 s faster to first audio. Set in the k8s ConfigMap, so it changes without an app release. |
+| `LEXI_VAD_SILENCE_MS` | `400` | server_vad `silence_duration_ms` (API default 500; 0 = default). Shorter = faster reply, but may jump in on short pauses. |
+| `LEXI_INSTRUCTIONS_FILE` | built-in prompt (language behaviour only: greet in Russian, follow a language switch) | Mounted ConfigMap in k8s. |
 | `LEXI_TOKEN_TTL_SECS` | `60` | Must be 10..=7200 (OpenAI limits). |
 | `LEXI_RATE_PER_INSTALL` / `LEXI_RATE_PER_IP` | `30` / `120` per hour | In-memory, per replica. |
 | `LEXI_ATTEST_MODE` | `off` | `off` \| `shared-key` (needs `LEXI_ATTEST_SHARED_KEY`) \| `play-integrity` (feature, stub until Phase 7). |

@@ -7,6 +7,9 @@ import android.view.Surface
 interface NativeCallback {
     /** state: 0 Idle, 1 Connecting, 2 Live, 3 Reconnecting, 4 Ended, 5 Error. */
     fun onState(state: Int, detail: String?)
+
+    /** Running cost of the current call in micro-USD (USD x 1e-6); only sent for models with a known price. */
+    fun onCost(microUsd: Long)
 }
 
 /** JNI surface, SPEC §4.2. Rust side: core/src/ffi. Names must match `Java_app_lexi_NativeBridge_*`. */
@@ -27,7 +30,11 @@ object NativeBridge {
     @JvmStatic external fun setVisualMode(mode: Int)
     @JvmStatic external fun touch(action: Int, pointerId: Int, x: Float, y: Float)
     @JvmStatic external fun pinch(scale: Float, focusX: Float, focusY: Float)
-    @JvmStatic external fun startCall(minterUrl: String, installIdHash: String)
+    /**
+     * [attestKey]: build-time shared key for the minter's `shared-key` attestation; empty = none.
+     * [voice]: one of the minter's voices; empty = the minter's default. Fixed for the whole call.
+     */
+    @JvmStatic external fun startCall(minterUrl: String, installIdHash: String, attestKey: String, voice: String)
     @JvmStatic external fun endCall()
     @JvmStatic external fun setMuted(muted: Boolean)
     @JvmStatic external fun onAudioRouteChanged()

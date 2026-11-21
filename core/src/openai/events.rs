@@ -59,6 +59,22 @@ pub struct TokenDetails {
     pub audio_tokens: u64,
     #[serde(default)]
     pub cached_tokens: u64,
+    /// Input only. Absent on output details.
+    #[serde(default)]
+    pub image_tokens: u64,
+    /// Input only: the cached subset of each modality (cached tokens are counted inside the totals above).
+    #[serde(default)]
+    pub cached_tokens_details: CachedDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct CachedDetails {
+    #[serde(default)]
+    pub text_tokens: u64,
+    #[serde(default)]
+    pub audio_tokens: u64,
+    #[serde(default)]
+    pub image_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -125,6 +141,21 @@ mod tests {
             ),
             (60, 40)
         );
+    }
+
+    #[test]
+    fn parses_image_and_cached_details() {
+        let j = r#"{"type":"response.done","response":{"usage":{"total_tokens":253,"input_tokens":132,
+          "output_tokens":121,"input_token_details":{"text_tokens":119,"audio_tokens":13,"image_tokens":0,
+          "cached_tokens":64,"cached_tokens_details":{"text_tokens":64,"audio_tokens":0,"image_tokens":0}},
+          "output_token_details":{"text_tokens":30,"audio_tokens":91}}}}"#;
+        let Some(ServerEvent::ResponseDone { response }) = parse_event(j) else {
+            panic!()
+        };
+        let u = response.usage.unwrap();
+        assert_eq!(u.input_token_details.cached_tokens_details.text_tokens, 64);
+        assert_eq!(u.input_token_details.image_tokens, 0);
+        assert_eq!(u.output_token_details.audio_tokens, 91);
     }
 
     #[test]

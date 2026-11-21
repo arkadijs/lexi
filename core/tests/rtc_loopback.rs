@@ -254,14 +254,24 @@ fn full_session_over_loopback() {
         "peer got only {} audio packets",
         p.rx_audio_ts.len()
     );
+    // Every step is a whole number of 20 ms frames: exactly 960 normally, a multiple of it across a
+    // stretch the encoder suppressed with DTX (the clock keeps running while nothing is sent).
     for w in p.rx_audio_ts.windows(2) {
-        assert_eq!(
-            w[1] - w[0],
-            960,
-            "RTP timestamps must advance by 960: {:?}",
+        let step = w[1] - w[0];
+        assert!(
+            step >= 960 && step % 960 == 0,
+            "RTP timestamps must advance in whole 960-tick frames, got {step}: {:?}",
             &p.rx_audio_ts[..10]
         );
     }
+    assert!(
+        p.rx_audio_ts
+            .windows(2)
+            .filter(|w| w[1] - w[0] == 960)
+            .count()
+            >= 30,
+        "most consecutive packets should be exactly one frame apart"
+    );
 
     // Peer → client: decoded audio reached the playout ring.
     assert!(

@@ -37,8 +37,15 @@ pub struct Config {
     pub api_key: Option<Secret>,
     pub openai_base_url: String,
     pub model: String,
+    /// Default voice, used when the app does not ask for one.
     pub voice: String,
+    /// Voices the app may request (`voice` in the request body); anything else is a 400.
+    pub voices: Vec<String>,
     pub instructions: String,
+    /// `session.reasoning.effort`; `None` leaves the API default (`low`).
+    pub reasoning_effort: Option<String>,
+    /// server_vad `silence_duration_ms` (API default 500); `None` leaves the default.
+    pub vad_silence_ms: Option<u32>,
     pub token_ttl_secs: u32,
     pub rate_per_install: u32,
     pub rate_per_ip: u32,
@@ -50,10 +57,18 @@ pub struct Config {
     pub request_timeout: Duration,
 }
 
-pub const DEFAULT_INSTRUCTIONS: &str = "You are Lexi, a friendly, concise vocabulary coach. \
-Help the user learn and use words: definitions, nuance between synonyms, usage in sentences, \
-etymology, quick spoken quizzes, pronunciation tips. Keep replies to one to three sentences \
-unless asked to elaborate. Speak English.";
+/// The whole prompt. Language behaviour only: greet in Russian, expect Russian, follow the user if
+/// they switch. (The client sends `response.create` when the session opens so the greeting is spoken.)
+pub const DEFAULT_INSTRUCTIONS: &str = "At the very start of the conversation, before the user \
+says anything, greet them with one short, warm sentence in Russian. Expect the user to speak \
+Russian and reply in Russian by default. If the user speaks another language, or asks you to \
+switch, switch to that language and keep using it until they switch again. In every language \
+speak naturally, with native pronunciation and intonation.";
+
+/// The built-in Realtime voices (OpenAI docs, verified 2026-11-21).
+pub const DEFAULT_VOICES: &str = "alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar";
+
+const EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
 
 /// OpenAI documents a 10 s minimum and 7200 s maximum for `expires_after.seconds`.
 const TTL_RANGE: std::ops::RangeInclusive<u32> = 10..=7200;
@@ -110,6 +125,29 @@ impl Config {
             return Err(format!("LEXI_TOKEN_TTL_SECS must be within {TTL_RANGE:?}"));
         }
 
+        let voices: Vec<String> = get("LEXI_VOICES")
+            .unwrap_or_else(|| DEFAULT_VOICES.to_owned())
+            .split(',')
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .collect();
+        let voice = get("LEXI_VOICE").unwrap_or_else(|| "cedar".into());
+        if !voices.contains(&voice) {
+            return Err(format!("LEXI_VOICE {voice:?} is not in LEXI_VOICES"));
+        }
+        // `low` is the API default; the deployed value comes from the ConfigMap (LEXI_REASONING_EFFORT).
+        // `minimal` was measured ~0.2 s faster to first audio (docs/SPEC.md §2.1) but is not the default.
+        let reasoning_effort = match get("LEXI_REASONING_EFFORT").as_deref().map(str::trim) {
+            None => Some("low".to_owned()),
+            Some("" | "default") => None,
+            Some(e) if EFFORTS.contains(&e) => Some(e.to_owned()),
+            Some(e) => return Err(format!("LEXI_REASONING_EFFORT: unknown effort {e:?}")),
+        };
+        let vad_silence_ms: u32 = parse(&get, "LEXI_VAD_SILENCE_MS", 400)?;
+        if !(100..=5000).contains(&vad_silence_ms) && vad_silence_ms != 0 {
+            return Err("LEXI_VAD_SILENCE_MS must be within 100..=5000 (0 = API default)".into());
+        }
+
         Ok(Self {
             bind: parse(
                 &get,
@@ -129,8 +167,11 @@ impl Config {
                 .trim_end_matches('/')
                 .to_owned(),
             model: get("LEXI_MODEL").unwrap_or_else(|| "gpt-realtime-2.1-mini".into()),
-            voice: get("LEXI_VOICE").unwrap_or_else(|| "marin".into()),
+            voice,
+            voices,
             instructions,
+            reasoning_effort,
+            vad_silence_ms: (vad_silence_ms != 0).then_some(vad_silence_ms),
             token_ttl_secs,
             rate_per_install: parse(&get, "LEXI_RATE_PER_INSTALL", 30)?,
             rate_per_ip: parse(&get, "LEXI_RATE_PER_IP", 120)?,
@@ -162,6 +203,25 @@ mod tests {
         assert_eq!(c.token_ttl_secs, 60);
         assert!(c.api_key.is_none());
         assert_eq!(c.attest_mode, AttestMode::Off);
+    }
+
+    #[test]
+    fn voice_and_latency_settings() {
+        let c = cfg(&[]).unwrap();
+        assert_eq!(c.voice, "cedar");
+        assert!(c.voices.iter().any(|v| v == "cedar"));
+        assert_eq!(c.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(c.vad_silence_ms, Some(400));
+        let c = cfg(&[
+            ("LEXI_REASONING_EFFORT", "default"),
+            ("LEXI_VAD_SILENCE_MS", "0"),
+        ])
+        .unwrap();
+        assert_eq!((c.reasoning_effort, c.vad_silence_ms), (None, None));
+        assert!(cfg(&[("LEXI_VOICE", "nope")]).is_err());
+        assert!(cfg(&[("LEXI_REASONING_EFFORT", "turbo")]).is_err());
+        assert!(cfg(&[("LEXI_VAD_SILENCE_MS", "50")]).is_err());
+        assert!(cfg(&[("LEXI_VOICES", "marin,cedar"), ("LEXI_VOICE", "coral")]).is_err());
     }
 
     #[test]

@@ -18,7 +18,10 @@ import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.graphics.drawable.GradientDrawable
+import android.view.Menu
 import android.widget.FrameLayout
+import android.widget.PopupMenu
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -35,11 +38,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     private lateinit var surface: SurfaceView
     private lateinit var status: TextView
+    private lateinit var topBar: LinearLayout
+    private lateinit var voicePill: TextView
+    private lateinit var costView: TextView
     private lateinit var controls: LinearLayout
     private lateinit var callBtn: IconButton
     private lateinit var muteBtn: IconButton
     private lateinit var routeBtn: IconButton
     private lateinit var modeBtn: IconButton
+    private lateinit var muteLbl: TextView
+    private lateinit var callLbl: TextView
+    private lateinit var routeLbl: TextView
+    private lateinit var modeLbl: TextView
 
     private var visualMode = NativeBridge.MODE_FLUID
     private var notice: Int? = null // transient status line message (resource id)
@@ -56,25 +66,56 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         surface = SurfaceView(this).also { it.holder.addCallback(this) }
         root.addView(surface, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
+        voicePill = TextView(this).apply {
+            setTextColor(0xFFFFFFFF.toInt()); textSize = 14f; gravity = Gravity.CENTER
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(0x88202A38.toInt()) }
+            minHeight = dp(40)
+            isClickable = true; isFocusable = true
+            setOnClickListener { showVoiceMenu() }
+        }
         status = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 16f; gravity = Gravity.CENTER
             setShadowLayer(6f, 0f, 0f, 0xFF000000.toInt())
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        root.addView(status, FrameLayout.LayoutParams(
+        costView = TextView(this).apply {
+            setTextColor(0xCCFFFFFF.toInt()); textSize = 14f; gravity = Gravity.CENTER
+            setShadowLayer(6f, 0f, 0f, 0xFF000000.toInt())
+            visibility = View.INVISIBLE // keeps the layout still before the first response
+        }
+        // Top bar: the voice selector, with the status line and the call cost under it (the bottom is busy).
+        topBar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+        topBar.addView(voicePill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        topBar.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        topBar.addView(costView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        root.addView(topBar, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP
-        ).apply { topMargin = dp(16) })
+        ))
 
         muteBtn = IconButton(this).also { it.setOnClickListener { toggleMute() } }
         callBtn = IconButton(this).also { it.setOnClickListener { onCallTapped() } }
         routeBtn = IconButton(this).also { it.setOnClickListener { AudioRouter.cycle() } }
         modeBtn = IconButton(this).also { it.setOnClickListener { toggleMode() } }
 
-        controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        fun add(b: IconButton, size: Int) = controls.addView(b, LinearLayout.LayoutParams(dp(size), dp(size)).apply {
-            marginStart = dp(10); marginEnd = dp(10)
-        })
-        add(muteBtn, 60); add(callBtn, 80); add(routeBtn, 60); add(modeBtn, 60)
+        controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_HORIZONTAL or Gravity.TOP }
+        // A button with a caption underneath; the side buttons are smaller, so they get a top margin
+        // that keeps all four circle centres on one line.
+        fun column(b: IconButton, size: Int): TextView {
+            val label = TextView(this).apply {
+                setTextColor(0xFFFFFFFF.toInt()); textSize = 12f; gravity = Gravity.CENTER
+                setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO // the button has the description
+            }
+            val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+            col.addView(b, LinearLayout.LayoutParams(dp(size), dp(size)))
+            col.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            controls.addView(col, LinearLayout.LayoutParams(dp(84), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp((80 - size) / 2)
+            })
+            return label
+        }
+        muteLbl = column(muteBtn, 60); callLbl = column(callBtn, 80); routeLbl = column(routeBtn, 60); modeLbl = column(modeBtn, 60)
         root.addView(controls, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM
         ))
@@ -83,7 +124,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         root.setOnApplyWindowInsetsListener { _, insets ->
             val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             controls.setPadding(i.left, 0, i.right, i.bottom + dp(24))
-            status.setPadding(i.left + dp(16), i.top, i.right + dp(16), 0)
+            topBar.setPadding(i.left + dp(16), i.top + dp(12), i.right + dp(16), 0)
             insets
         }
         setContentView(root)
@@ -135,15 +176,41 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) = NativeBridge.surfaceChanged(w, h)
     override fun surfaceDestroyed(holder: SurfaceHolder) = NativeBridge.surfaceDestroyed()
 
+    private fun showVoiceMenu() {
+        val menu = PopupMenu(this, voicePill)
+        val current = Voices.current(this)
+        Voices.all.forEachIndexed { i, v -> menu.menu.add(1, i, i, v.label) }
+        menu.menu.setGroupCheckable(1, true, true)
+        // Only the match may be touched: in an exclusive group even `isChecked = false` selects the item.
+        for (n in 0 until menu.menu.size()) {
+            val item = menu.menu.getItem(n)
+            if (item.title == current.label) item.isChecked = true
+        }
+        menu.setOnMenuItemClickListener { item ->
+            Voices.all.firstOrNull { it.label == item.title.toString() }?.let { v ->
+                Voices.set(this, v)
+                // A voice is fixed once the model has spoken, so a running call keeps its voice.
+                if (CallModel.active) notice = R.string.st_voice_next
+                render()
+            }
+            true
+        }
+        menu.show()
+    }
+
+    /** US dollars: four decimals below $1 ($0.0123), two above. An estimate priced from OpenAI's usage reports. */
+    private fun formatCost(micro: Long): String =
+        if (micro < 1_000_000) String.format(java.util.Locale.US, "$%.4f", micro / 1e6)
+        else String.format(java.util.Locale.US, "$%.2f", micro / 1e6)
+
     private fun toggleMode() {
         visualMode = if (visualMode == NativeBridge.MODE_FLUID) NativeBridge.MODE_FRACTAL else NativeBridge.MODE_FLUID
         NativeBridge.setVisualMode(visualMode)
         render()
     }
 
-    private fun toggleMute() {
-        if (CallModel.active) CallModel.setMuted(!CallModel.muted)
-    }
+    // Works before, during and after a call: muting first means the call starts muted.
+    private fun toggleMute() = CallModel.setMuted(!CallModel.muted)
 
     private fun onCallTapped() {
         if (CallModel.active) {
@@ -187,36 +254,62 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun render() {
         val active = CallModel.active
         val connecting = CallModel.state == CallModel.CONNECTING || CallModel.state == CallModel.RECONNECTING
-        if (active) notice = null
+        // The "new voice applies to the next call" hint belongs to a running call and ends with it.
+        if (active && notice != R.string.st_voice_next) notice = null
+        if (!active && notice == R.string.st_voice_next) notice = null
 
         callBtn.kind = if (active) IconButton.Kind.HANGUP else IconButton.Kind.CALL
         callBtn.busy = connecting
         callBtn.contentDescription = getString(if (active) R.string.cd_hangup else R.string.cd_call)
+        callLbl.setText(if (active) R.string.lb_hangup else R.string.lb_call)
 
         muteBtn.kind = if (CallModel.muted) IconButton.Kind.MIC_OFF else IconButton.Kind.MIC
         muteBtn.contentDescription = getString(if (CallModel.muted) R.string.cd_unmute else R.string.cd_mute)
-        muteBtn.alpha = if (active) 1f else 0.4f
+        muteLbl.setText(if (CallModel.muted) R.string.lb_muted else R.string.lb_mute)
 
-        val (routeKind, routeCd) = when (AudioRouter.current) {
-            AudioRouter.Route.EARPIECE -> IconButton.Kind.EARPIECE to R.string.cd_route_earpiece
-            AudioRouter.Route.SPEAKER -> IconButton.Kind.SPEAKER to R.string.cd_route_speaker
-            AudioRouter.Route.WIRED -> IconButton.Kind.WIRED to R.string.cd_route_wired
-            AudioRouter.Route.BLUETOOTH -> IconButton.Kind.BLUETOOTH to R.string.cd_route_bluetooth
+        val (routeKind, routeCd, routeLb) = when (AudioRouter.current) {
+            AudioRouter.Route.EARPIECE -> Triple(IconButton.Kind.EARPIECE, R.string.cd_route_earpiece, R.string.lb_earpiece)
+            AudioRouter.Route.SPEAKER -> Triple(IconButton.Kind.SPEAKER, R.string.cd_route_speaker, R.string.lb_speaker)
+            AudioRouter.Route.WIRED -> Triple(IconButton.Kind.WIRED, R.string.cd_route_wired, R.string.lb_wired)
+            AudioRouter.Route.BLUETOOTH -> Triple(IconButton.Kind.BLUETOOTH, R.string.cd_route_bluetooth, R.string.lb_bluetooth)
         }
         routeBtn.kind = routeKind
         routeBtn.contentDescription = getString(routeCd)
+        routeLbl.setText(routeLb)
         routeBtn.alpha = if (active) 1f else 0.4f
 
         val fluid = visualMode == NativeBridge.MODE_FLUID
         modeBtn.kind = if (fluid) IconButton.Kind.FLUID else IconButton.Kind.FRACTAL
         modeBtn.contentDescription = getString(if (fluid) R.string.cd_mode_fluid else R.string.cd_mode_fractal)
+        modeLbl.setText(if (fluid) R.string.lb_fluid else R.string.lb_fractal)
+
+        val voice = Voices.current(this)
+        voicePill.text = "${voice.label}  ▾"
+        voicePill.contentDescription = getString(R.string.cd_voice, voice.label)
+
+        val cost = CallModel.costMicro
+        costView.visibility = if (cost == null) View.INVISIBLE else View.VISIBLE
+        if (cost != null) costView.text = formatCost(cost)
+        costView.contentDescription = cost?.let { getString(R.string.cd_cost, formatCost(it)) }
 
         status.text = notice?.let { getString(it) } ?: when (CallModel.state) {
             CallModel.CONNECTING -> getString(R.string.st_connecting)
             CallModel.RECONNECTING -> getString(R.string.st_reconnecting)
             CallModel.LIVE -> getString(R.string.st_live)
-            CallModel.ENDED -> if (CallModel.endReason == "interrupted") getString(R.string.st_interrupted) else ""
-            CallModel.ERROR -> getString(R.string.st_error)
+            CallModel.ENDED -> when {
+                CallModel.endReason == "interrupted" -> getString(R.string.st_interrupted)
+                CallModel.detail == "remote" -> getString(R.string.st_remote)
+                CallModel.detail == "max-session" -> getString(R.string.st_max_session)
+                else -> ""
+            }
+            CallModel.ERROR -> getString(when (CallModel.detail) {
+                "network" -> R.string.st_no_network
+                "auth" -> R.string.st_auth
+                "rate" -> R.string.st_rate
+                "service" -> R.string.st_service
+                "audio" -> R.string.st_audio
+                else -> R.string.st_error
+            })
             else -> ""
         }
     }

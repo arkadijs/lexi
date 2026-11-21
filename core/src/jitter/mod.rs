@@ -344,6 +344,7 @@ mod tests {
     #[test]
     fn simulated_jitter_and_loss_keep_audio_flowing() {
         let mut enc = OpusEncoder::new().unwrap();
+        enc.disable_dtx(); // this test is about loss/reordering, not silence suppression
         let mut play = Playout::new().unwrap();
         let mut packets = vec![];
         for f in 0..100usize {
