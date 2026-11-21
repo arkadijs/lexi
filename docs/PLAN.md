@@ -40,12 +40,12 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 
 ## Phase 3 — Desktop WebRTC proof (`core/rtc`, `core/openai`, `core/codec`, `devtools/desk`)
 **The critical-risk phase.** Everything here must be platform-independent and reused unchanged on Android.
-- [ ] `openai` module: fetch token from the minter (`ureq` + rustls); SDP POST to `/v1/realtime/calls` **[verify headers/response in the current docs]**; event types for the data channel (serde, unknown events ignored).
-- [ ] `rtc` module: str0m with `rust-crypto` feature; add host candidates for all local interfaces; Opus-only audio m-line SendRecv + `oai-events` channel; net loop per SPEC §4.1, behind a `RtcSession` API: `start(token) -> handle`, `send_pcm_frame`, `on_pcm`, `on_event`, `close`.
-- [ ] `codec` module: libopus (`opus` or `audiopus` crate) 48 kHz mono, 20 ms, VOIP, FEC, DTX; correct RTP timestamps (+960 per frame).
-- [ ] `jitter` module: playout buffer with 60 ms target, reordering, PLC via Opus decode-with-loss, `flush()` for barge-in. Unit tests with simulated jitter/loss.
-- [ ] `desk` CLI: `cpal` mic/speaker, prints events and levels, `--minter URL` or `--dev-key` (env only).
-- [ ] If DTLS with `rust-crypto` fails against OpenAI, switch str0m to `aws-lc-rs` and document why.
+- [x] `openai` module: fetch token from the minter (`ureq` + rustls); SDP POST to `/v1/realtime/calls` **[verify headers/response in the current docs]**; event types for the data channel (serde, unknown events ignored).
+- [x] `rtc` module: str0m with `rust-crypto` feature; add host candidates for all local interfaces; Opus-only audio m-line SendRecv + `oai-events` channel; net loop per SPEC §4.1, behind a `RtcSession` API: `start(token) -> handle`, `send_pcm_frame`, `on_pcm`, `on_event`, `close`.
+- [x] `codec` module: libopus (`opus` or `audiopus` crate) 48 kHz mono, 20 ms, VOIP, FEC, DTX; correct RTP timestamps (+960 per frame).
+- [x] `jitter` module: playout buffer with 60 ms target, reordering, PLC via Opus decode-with-loss, `flush()` for barge-in. Unit tests with simulated jitter/loss.
+- [ ] `desk` CLI: `cpal` mic/speaker, prints events and levels, `--minter URL` or `--dev-key` (env only). _(headless live-tested; `cpal` streams verified to open at 48 kHz via `--check-audio`; a real mic/speaker conversation with a human is still to do)_
+- [x] If DTLS with `rust-crypto` fails against OpenAI, switch str0m to `aws-lc-rs` and document why. _(not needed: DTLS works against OpenAI with `rust-crypto`)_
 
 **Done when:** `cargo run -p desk -- --minter http://localhost:8080` lets you talk to Lexi on a laptop with headphones; barge-in works; Ctrl-C closes cleanly; the usage from `response.done` is printed.
 
