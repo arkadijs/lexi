@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lexi-minter
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app.kubernetes.io/name: lexi-minter }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: lexi-minter }
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: minter
+          image: lexi-minter
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9090 }
+          envFrom:
+            - configMapRef: { name: lexi-minter-env }
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: openai-api-key, key: OPENAI_API_KEY }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 64Mi }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 1
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
+          volumeMounts:
+            - { name: instructions, mountPath: /etc/lexi, readOnly: true }
+      volumes:
+        - name: instructions
+          configMap: { name: lexi-minter-instructions }

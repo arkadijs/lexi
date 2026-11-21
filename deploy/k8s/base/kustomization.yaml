@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: lexi
+labels:
+  - pairs: { app.kubernetes.io/name: lexi-minter, app.kubernetes.io/part-of: lexi }
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+configMapGenerator:
+  - name: lexi-minter-env
+    literals:
+      - LEXI_MODEL=gpt-realtime-2.1-mini
+      - LEXI_VOICE=marin
+      - LEXI_TOKEN_TTL_SECS=60
+      - LEXI_INSTRUCTIONS_FILE=/etc/lexi/instructions.txt
+      - LEXI_ATTEST_MODE=off
+      - LEXI_TRUST_FORWARDED_FOR=false
+  - name: lexi-minter-instructions
+    files: [instructions.txt]
+# The Secret `openai-api-key` (key OPENAI_API_KEY) is referenced, never committed:
+#   kubectl -n lexi create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...

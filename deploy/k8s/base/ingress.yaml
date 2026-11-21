@@ -1,0 +1,18 @@
+# Contour (no ingressClassName, matching the other apps on the cluster) + cert-manager.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lexi-minter
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  rules:
+    - host: lexi-minter.example.com   # overridden per overlay
+      http:
+        paths:
+          - path: /v1/call-token
+            pathType: Exact
+            backend: { service: { name: lexi-minter, port: { name: http } } }
+  tls:
+    - hosts: [lexi-minter.example.com]
+      secretName: lexi-minter-cert

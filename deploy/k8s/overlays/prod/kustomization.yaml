@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+configMapGenerator:
+  - name: lexi-minter-env
+    behavior: merge
+    literals:
+      - LEXI_ATTEST_MODE=shared-key   # switch to play-integrity in Phase 7
+      - LEXI_TRUST_FORWARDED_FOR=true # rightmost X-Forwarded-For is added by the ingress
+patches:
+  - target: { kind: Deployment, name: lexi-minter }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: LEXI_ATTEST_SHARED_KEY
+          valueFrom:
+            secretKeyRef: { name: lexi-attest-key, key: LEXI_ATTEST_SHARED_KEY }
+# Secret `lexi-attest-key` is also created out-of-band (see deploy/k8s/README.md).

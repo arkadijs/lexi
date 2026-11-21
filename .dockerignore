@@ -1,0 +1,8 @@
+target
+.git
+.envrc
+.env*
+android
+docs
+deploy
+**/*.keystore

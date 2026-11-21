@@ -1,0 +1,17 @@
+# The deploy.example.com cluster: no registry, images are built with docker on the node (containerd store),
+# hence imagePullPolicy Never. Host + TLS are handled by DNS/cert-manager automatically.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../prod]
+images:
+  - name: lexi-minter
+    newName: lexi-minter
+    newTag: remote   # replaced by scripts/deploy.sh with the git short SHA
+patches:
+  - target: { kind: Deployment, name: lexi-minter }
+    patch: |-
+      - { op: replace, path: /spec/template/spec/containers/0/imagePullPolicy, value: Never }
+  - target: { kind: Ingress, name: lexi-minter }
+    patch: |-
+      - { op: replace, path: /spec/rules/0/host, value: lexi-minter.example.com }
+      - { op: replace, path: /spec/tls/0/hosts/0, value: lexi-minter.example.com }

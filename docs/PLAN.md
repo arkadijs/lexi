@@ -31,10 +31,10 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 **Done when:** tests pass; `OPENAI_API_KEY=... cargo run -p lexi-minter` and `curl -XPOST localhost:8080/v1/call-token` return a real `ek_` token.
 
 ## Phase 2 — Container + Kubernetes (`minter/Dockerfile`, `deploy/k8s/`)
-- [ ] Multi-stage Dockerfile: build static musl binary (cargo-chef for caching) → `distroless/static:nonroot`. Multi-arch (amd64, arm64) via buildx.
-- [ ] Kustomize base + `dev`/`prod` overlays per SPEC §5.5. The Secret is referenced, not committed; document `kubectl create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...`.
-- [ ] `scripts/kind-up.sh`: create a kind cluster, load the image, apply the dev overlay, port-forward.
-- [ ] CI: build the image, `kustomize build | kubeconform -strict`, Trivy scan (fail on HIGH/CRITICAL).
+- [x] Multi-stage Dockerfile: build static musl binary (cargo-chef for caching) → `distroless/static:nonroot`. Multi-arch (amd64, arm64) via buildx. (built and run on remote for amd64; the arm64/buildx multi-arch build is in CI only, not yet run)
+- [x] Kustomize base + `dev`/`prod` overlays per SPEC §5.5. The Secret is referenced, not committed; document `kubectl create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...`. (plus an `remote` overlay for the real cluster; see deploy/k8s/README.md)
+- [x] `scripts/kind-up.sh`: create a kind cluster, load the image, apply the dev overlay, port-forward. (written, **not run**: no docker/kind available here; the dev overlay was only server-side dry-run on remote)
+- [x] CI: build the image, `kustomize build | kubeconform -strict`, Trivy scan (fail on HIGH/CRITICAL). (jobs added to ci.yml, **not yet run in CI**)
 
 **Done when:** on kind, the pod is Ready, runs as non-root with a read-only FS, and `curl` through the port-forward returns a token; image < 15 MB.
 

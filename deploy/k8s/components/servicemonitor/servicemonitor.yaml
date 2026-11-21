@@ -1,0 +1,9 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lexi-minter
+spec:
+  selector:
+    matchLabels: { app.kubernetes.io/name: lexi-minter }
+  endpoints:
+    - { port: metrics, path: /metrics, interval: 30s }
