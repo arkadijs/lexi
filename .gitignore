@@ -1,0 +1,13 @@
+/target/
+**/jniLibs/
+*.keystore
+*.jks
+.env
+.env.*
+.envrc
+local.properties
+/android/.gradle/
+/android/build/
+/android/app/build/
+.idea/
+*.iml

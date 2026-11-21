@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["core", "minter", "devtools/desk"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+# CLAUDE.md: no unwrap() in non-test code (tests allowed via clippy.toml).
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "warn"
+
+# SPEC §8. Applies to the whole workspace; core is what ships in the APK.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
