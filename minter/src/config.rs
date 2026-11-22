@@ -57,13 +57,11 @@ pub struct Config {
     pub request_timeout: Duration,
 }
 
-/// The whole prompt. Language behaviour only: greet in Russian, expect Russian, follow the user if
-/// they switch. (The client sends `response.create` when the session opens so the greeting is spoken.)
-pub const DEFAULT_INSTRUCTIONS: &str = "At the very start of the conversation, before the user \
-says anything, greet them with one short, warm sentence in Russian. Expect the user to speak \
-Russian and reply in Russian by default. If the user speaks another language, or asks you to \
-switch, switch to that language and keep using it until they switch again. In every language \
-speak naturally, with native pronunciation and intonation.";
+/// The built-in prompt: language behaviour (greet in Russian, expect Russian, follow a language switch) plus a
+/// conversation style (an equal partner, hard length limits, no offers or closing questions, how to react to
+/// "stop"). The client sends `response.create` when the session opens so the greeting is spoken. The same text
+/// lives in `deploy/k8s/base/instructions.txt` (the ConfigMap that overrides it); a test keeps them identical.
+pub const DEFAULT_INSTRUCTIONS: &str = include_str!("instructions.default.txt");
 
 /// The built-in Realtime voices (OpenAI docs, verified 2026-11-21).
 pub const DEFAULT_VOICES: &str = "alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar";
@@ -203,6 +201,39 @@ mod tests {
         assert_eq!(c.token_ttl_secs, 60);
         assert!(c.api_key.is_none());
         assert_eq!(c.attest_mode, AttestMode::Off);
+    }
+
+    #[test]
+    fn built_in_prompt_matches_the_configmap_copy() {
+        let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../deploy/k8s/base/instructions.txt");
+        let deployed = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            DEFAULT_INSTRUCTIONS, deployed,
+            "keep minter/src/instructions.default.txt and {file:?} identical"
+        );
+    }
+
+    #[test]
+    fn built_in_prompt_has_the_rules_that_were_tested() {
+        for needle in [
+            "greet them with one short, warm sentence in Russian",
+            "at most 20 words",
+            "When the user stops you",
+            "Examples of the style",
+        ] {
+            assert!(
+                DEFAULT_INSTRUCTIONS.contains(needle)
+                    || DEFAULT_INSTRUCTIONS
+                        .to_lowercase()
+                        .contains(&needle.to_lowercase()),
+                "missing: {needle}"
+            );
+        }
+        assert!(
+            DEFAULT_INSTRUCTIONS.len() < 4000,
+            "the prompt is paid for on every response: keep it short"
+        );
     }
 
     #[test]

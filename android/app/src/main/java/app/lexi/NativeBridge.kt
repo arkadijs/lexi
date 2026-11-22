@@ -22,6 +22,8 @@ object NativeBridge {
     const val ACTION_DOUBLE_TAP = 1000
     const val MODE_FLUID = 0
     const val MODE_FRACTAL = 1
+    /** Debug/measurement only: no visuals at all (`am start --es visuals off`). */
+    const val MODE_OFF = 2
 
     @JvmStatic external fun init(context: Context, callback: NativeCallback)
     @JvmStatic external fun surfaceCreated(surface: Surface)

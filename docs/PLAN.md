@@ -85,7 +85,9 @@ N4's 5 % budget (see android/README.md).
   remembered; a change during a call applies to the next call. Narrowed after listening tests to **Cedar (default)** and
   **Alloy**, no section headers.
 - [x] Default voice chosen by listening: Cedar (`LEXI_VOICE` in the ConfigMap, `Voices.kt`); Alloy as the alternative.
-- [ ] Verify on the phone: greeting, language switch, voice change, and the new latency in a real conversation.
+- [x] Talkativeness clamp: conversation-style prompt with hard length limits and a quiet-on-stop rule (SPEC §2.1);
+  replies 3-8x shorter in the live-API A/B test.
+- [ ] Verify on the phone: greeting, language switch, voice change, the new latency and the new prompt in a real conversation.
 
 ## Phase 5b — Running call cost (`core/pricing`, ffi, UI)
 Show what the current call has cost so far (SPEC §2.6). The price table of `gpt-realtime-2.1-mini` is built into the app.
@@ -93,7 +95,7 @@ Show what the current call has cost so far (SPEC §2.6). The price table of `gpt
 - [x] Extend the `Usage` parsing in `core/openai/events.rs` with `image_tokens` and `cached_tokens_details` (`audio_tokens`, `text_tokens`, `image_tokens`); tolerate missing fields.
 - [x] Supervisor: add each `response.done` usage to a per-call total (kept across reconnects), publish it in `Shared` (atomic micro-USD) and notify Kotlin; keep the existing usage log line (token counts only).
 - [x] JNI: `NativeCallback.onCost(microUsd: Long)` (SPEC §4.2); reset to 0 on `startCall`.
-- [x] UI: a one-line cost readout next to the status line, e.g. `$0.0123`; hidden before the first response; stays visible after the call ends until the next call; shown as tokens-only or hidden when the model has no known price.
+- [x] UI: a one-line cost readout next to the status line, e.g. `$0.0123`; hidden before the first response; stays visible for 10 s after the call ends, then disappears; shown as tokens-only or hidden when the model has no known price.
 - [x] Tests: pricing math against the documented example (253 tokens → $0.00205884) and edge cases (cached subset, image tokens, missing details, unknown model); supervisor test for accumulation across a reconnect; compare the displayed total with the OpenAI usage dashboard after a real call (they should agree to rounding). *(Only the last part is open: the on-device greeting call showed $0.0011 = 1099 uUSD, matching the logged tokens, but the dashboard comparison needs your account.)*
 
 **Done when:** a real call shows a cost that grows after each reply and matches the usage dashboard for that call to within rounding.
@@ -119,6 +121,16 @@ Show what the current call has cost so far (SPEC §2.6). The price table of `gpt
 **Done when:** all of SPEC §10 passes; CI produces a signed APK and the minter image on a tag.
 
 ---
+
+*Status (2026-11-22):* implemented and **verified on the Moto g42**: both scenes render at 60 fps with a call running; touch
+(drag) stirs the fluid and pans the fractal; the bot's voice reaches the renderer and drives the shimmer (loudness is mapped
+with a fixed x4 gain, as speech RMS peaks around 0.2); the renderer stops within milliseconds when the screen goes off (0 frames
+logged while off) and restarts when it comes back; adaptive quality is in (never triggered at 60 fps). Cost is measured in
+android/README.md ("Cost of the visuals"). Not verified: pinch-zoom (adb cannot synthesize two fingers), the shimmer judged
+by eye during a real conversation, and the battery/power impact (needs the phone unplugged).
+Choices made along the way: the fluid runs at 0.1x real time with a 3 s normal-speed pre-roll so it is developed at start; the
+fractal is a Julia set whose constant travels the main cardioid of the Mandelbrot set (connected shapes only); the Mandelbrot
+mode exists in the shader but has no UI toggle.
 
 ## Risk log (review at the start of each phase)
 | Risk | Mitigation |

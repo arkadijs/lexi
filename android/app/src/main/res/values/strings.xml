@@ -24,8 +24,6 @@
     <string name="notif_mute">Mute</string>
     <string name="notif_unmute">Unmute</string>
     <string name="notif_hangup">Hang up</string>
-    <string name="lb_call">Call</string>
-    <string name="lb_hangup">Hang up</string>
     <string name="lb_mute">Mute</string>
     <string name="lb_muted">Muted</string>
     <string name="lb_earpiece">Earpiece</string>

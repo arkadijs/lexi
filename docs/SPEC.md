@@ -35,11 +35,25 @@ the current official docs before implementing them.
 ## 2. Product behaviour
 
 ### 2.1 The coach
-- **Prompt** (cleared and rewritten 2026-11-22): language behaviour only, no persona or role. The model greets the
-  user with one short sentence in Russian before they say anything, expects a Russian-speaking user and answers in
-  Russian by default, switches language when the user does (or asks it to) and stays in it until they switch again,
-  and speaks naturally with native pronunciation in whatever language it uses. The text is a minter config value
-  (`LEXI_INSTRUCTIONS_FILE`, the `lexi-minter-instructions` ConfigMap), so it changes without an app release.
+- **Prompt** (rewritten 2026-11-22; text in `minter/src/instructions.default.txt`, mirrored in the
+  `lexi-minter-instructions` ConfigMap `deploy/k8s/base/instructions.txt`, a test keeps them identical, so it
+  changes without an app release). Two parts:
+  1. *Language:* the model greets the user with one short sentence in Russian before they say anything, expects a
+     Russian-speaking user and answers in Russian by default, switches language when the user does (or asks it to) and
+     stays in it until they switch again, and speaks naturally with native pronunciation.
+  2. *Conversation style:* an equal conversation partner, not an assistant: relaxed, direct, with opinions. **Hard limits**
+     (OpenAI's guide says "be concise" alone works worse than limits defined per situation): every turn at most 20
+     words (usually 5-12); longer only when the user explicitly asks to elaborate, then at most four sentences; answer
+     first, no recap, no closing remark. Never offers help or extras ("anything else?"); asks a question back only when
+     it really needs the answer; a short acknowledgement from the user needs no reply. **When told to stop** (or
+     interrupted) it answers with at most two words or nothing and stays silent until addressed, and does not resume.
+     A few short example exchanges are included (the model follows examples closely; the prompt says to vary them).
+  Why: the model kept talking and, after a barge-in, answered the user's "stop" with a new helpful monologue (the
+  server starts a new response for every utterance). Measured on the live API with text prompts (seconds of bot speech,
+  old prompt -> new prompt): small talk ~12 -> 2.7-4.2; a definition 18-20 -> 2.1-4.8; "stop" 1.8-4.7 -> 0.3-1.3; "ok,
+  got it" 3.7-8.3 -> 1.5-3.6; "tell me about octopuses in detail" 39-62 -> 10-14. Against the deployed minter: a stop
+  request is answered in 0.7 s. Limits: replies to opinion questions still run 6-12 s, and barge-in with real audio was
+  not part of this test.
 - **Greeting trigger:** instructions alone do not make the model speak first. The core sends `response.create` once
   when the `oai-events` channel opens (once per call: a reconnect does not greet again). It costs a few audio tokens.
 - Brevity and the vocabulary-coach role are no longer instructed; replies can be longer. The cost readout (§2.6)
@@ -140,7 +154,7 @@ of those usages priced with a **price table built into the app**.
   is free until a response is created: VAD filters empty audio, and user audio is 1 token per 100 ms, assistant audio 1
   token per 50 ms.
 - **Per call, across reconnects:** the total keeps accumulating if the call reconnects (billing does too), and resets
-  when a new call starts. It stays on screen after hang-up until the next call.
+  when a new call starts. It stays on screen for 10 s after the call ends and then disappears.
 - **Unknown model:** the minter returns the model it used. If it is not in the built-in table (for example a changed
   `LEXI_MODEL`), the readout is hidden rather than wrong.
 - **Display:** US dollars, four decimals below $1 (`$0.0123`), two above. An estimate to be compared with the OpenAI

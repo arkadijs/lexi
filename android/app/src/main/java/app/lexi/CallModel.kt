@@ -31,6 +31,15 @@ object CallModel : NativeCallback {
 
     val active get() = state == CONNECTING || state == LIVE || state == RECONNECTING
 
+    /** How long the call's cost stays on screen after the call ends. */
+    private const val COST_LINGER_MS = 10_000L
+    private val hideCost = Runnable {
+        if (!active && costMicro != null) {
+            costMicro = null
+            notifyChanged()
+        }
+    }
+
     override fun onState(state: Int, detail: String?) {
         main.post { set(state, detail) }
     }
@@ -43,6 +52,7 @@ object CallModel : NativeCallback {
     }
 
     fun begin() {
+        main.removeCallbacks(hideCost)
         costMicro = null
         // `muted` is deliberately kept: muting before the call starts must hold from the first frame.
         endReason = null
@@ -65,8 +75,11 @@ object CallModel : NativeCallback {
     }
 
     private fun set(state: Int, detail: String?) {
+        val wasActive = active
         this.state = state
         this.detail = detail
+        // The call just ended: keep its cost visible for a moment, then let it go.
+        if (wasActive && !active && costMicro != null) main.postDelayed(hideCost, COST_LINGER_MS)
         notifyChanged()
     }
 

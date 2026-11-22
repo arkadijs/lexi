@@ -19,6 +19,8 @@ if ! ssh "$HOST" 'docker image inspect lexi-android-builder >/dev/null 2>&1'; th
         && cd /tmp/lexi-abuild && docker build -t lexi-android-builder -f devtools/android-builder/Dockerfile .'
 fi
 
+# Self-heal: a container run by hand (as root) leaves root-owned files that tar could not overwrite.
+ssh "$HOST" "[ -d $SRC ] && docker run --rm -v $SRC:/work alpine chown -R \$(id -u):\$(id -g) /work || true" >/dev/null 2>&1
 echo ">> shipping working tree"
 tar --exclude=.git --exclude=target --exclude=.envrc --exclude='.env*' --exclude=dist \
     --exclude=android/.gradle --exclude=android/build --exclude=android/app/build \

@@ -81,3 +81,32 @@ Wi-Fi → cellular handover. These need a person speaking, a headset, or a SIM.
 Fewer UDP reader wake-ups (one blocking read per socket instead of a 100 ms poll; wake them on close with a datagram
 to themselves), binding sockets only for the interface that reaches OpenAI, and skipping the decode of 1–2 byte DTX
 packets. Re-measure with a real battery test in Phase 7.
+
+## Cost of the visuals (measured on the Moto g42, 2026-11-22, phone plugged in, screen on)
+
+`am start --es visuals off` starts the app with no renderer, the baseline. Each row: fresh start, 12 s warm-up, 30 s window.
+CPU from `/proc` ticks (device-wide and for the app), CPU frequency from a perfetto `power/cpu_frequency` trace (time-weighted,
+% of each core's maximum), GPU time from `EXT_disjoint_timer_query` around each frame inside the app (the shell cannot read the
+GPU's own counters).
+
+| | visuals off | fluid | fractal |
+|---|---|---|---|
+| Frame rate | n/a | 60.0 fps (worst frame 33 ms) | 59.9 fps (worst frame 50 ms) |
+| GPU time per frame | 0 | **12.5 ms = 75 %** of the 16.7 ms frame | **12.8 ms = 76 %** |
+| Device CPU busy (all 8 cores) | 2.1 % | 5.5 % | 4.5 % |
+| App CPU (% of one core) | 0.1 % | 15.6 % | 9.6 % |
+| of which render thread | 0 | 12.8 % | 7.3 % |
+| CPU frequency, little cores 0-3 (% of max) | 81 % | 80 % | 87 % |
+| CPU frequency, big cores 4-7 (% of max) | 74 % | 74 % | 74 % |
+| GPU temperature after the window | 33.6 C | 44.0 C (+1.6 during) | 43.2 C (+0.4 during) |
+
+Reading it: the visuals cost little CPU and do not change the CPU clocks, but they keep the GPU about three quarters busy.
+The two scenes cost the GPU the same; the fractal needs less CPU (no simulation bookkeeping). GPU frequency scaling could not be
+observed (the kernel emitted no GPU frequency events during the window and its sysfs is blocked), so GPU load is given as time
+per frame, not as a clock percentage. **Power/battery impact is not measured**: with the phone plugged in (and full) the battery
+current says nothing about the load. It needs the phone unplugged (wireless adb) so the fuel gauge shows the real drain; a
+reasonable guess from 75 % GPU load is a clearly visible drain, which is why adaptive quality and the option to cap the frame
+rate or start at a lower level exist.
+
+Other numbers from the same work: one fluid simulation step costs ~7.7 ms of GPU time (pre-roll: 180 steps in 1.38 s);
+speed of the picture, as mean pixel change between screenshots, at a 1 s / 6 s gap: 7.2 / 19.2 (original) vs 2.5 / 4.6 (0.1x clock).

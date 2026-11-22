@@ -27,5 +27,8 @@ ureq = { version = "3.5.2", default-features = false, features = ["rustls", "jso
 
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15.1"
+glow = { version = "0.18.0", default-features = false }
 jni = "0.22.4"
+khronos-egl = { version = "6.0.0", default-features = false, features = ["1_5", "static", "no-pkg-config"] }
 ndk = { version = "0.9.0", default-features = false, features = ["audio", "api-level-31"] }
+ndk-sys = "0.6.0"

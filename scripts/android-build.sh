@@ -16,4 +16,27 @@ if [ ! -x gradlew ]; then
     --gradle-distribution-sha256-sum "$GRADLE_SHA256"
 fi
 [ "$#" -gt 0 ] || set -- assembleDebug
-./gradlew --no-daemon --console=plain --max-workers "${LEXI_JOBS:-$(nproc)}" "$@"
+# Guard: a cdylib links fine with undefined symbols and only fails when Android loads it (an app once shipped
+# that crashed at startup: "cannot locate symbol eglSwapInterval"). Every undefined symbol of a family we use
+# must have its library in NEEDED. Uses the NDK's llvm tools (the container's binutils may not read aarch64).
+check_so() {
+  local so="$1" bin="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin" bad=0 undef needed prefix lib pair
+  undef=$("$bin/llvm-nm" -D --undefined-only "$so" | awk '{print $NF}')
+  needed=$("$bin/llvm-readelf" -d "$so" | grep NEEDED || true)
+  for pair in "egl:libEGL.so" "AAudio:libaaudio.so" "ANativeWindow:libandroid.so" "AChoreographer:libandroid.so" \
+              "ALooper:libandroid.so" "__android_log:liblog.so"; do
+    prefix=${pair%%:*}; lib=${pair##*:}
+    if echo "$undef" | grep -q "^$prefix" && ! echo "$needed" | grep -q "$lib"; then
+      echo "ERROR: $so uses $prefix* symbols but is not linked against $lib (it would crash at load time)" >&2
+      bad=1
+    fi
+  done
+  [ "$bad" = 0 ] && echo "check_so: $(basename "$so") links every library it needs"
+  return $bad
+}
+
+rc=0
+./gradlew --no-daemon --console=plain --max-workers "${LEXI_JOBS:-$(nproc)}" "$@" || rc=$?
+so=app/src/main/jniLibs/arm64-v8a/liblexi_core.so
+if [ "$rc" = 0 ] && [ -f "$so" ]; then check_so "$so" || rc=1; fi
+exit "$rc"

@@ -47,7 +47,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var routeBtn: IconButton
     private lateinit var modeBtn: IconButton
     private lateinit var muteLbl: TextView
-    private lateinit var callLbl: TextView
     private lateinit var routeLbl: TextView
     private lateinit var modeLbl: TextView
 
@@ -61,6 +60,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.isNavigationBarContrastEnforced = false
+        // Measurement aid: `adb shell am start -n app.lexi/.MainActivity --es visuals off` gives a baseline with no renderer.
+        if (intent.getStringExtra("visuals") == "off") {
+            visualMode = NativeBridge.MODE_OFF
+            NativeBridge.setVisualMode(NativeBridge.MODE_OFF)
+        }
 
         val root = FrameLayout(this)
         surface = SurfaceView(this).also { it.holder.addCallback(this) }
@@ -101,21 +105,25 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_HORIZONTAL or Gravity.TOP }
         // A button with a caption underneath; the side buttons are smaller, so they get a top margin
         // that keeps all four circle centres on one line.
-        fun column(b: IconButton, size: Int): TextView {
-            val label = TextView(this).apply {
+        fun column(b: IconButton, size: Int, labelled: Boolean = true): TextView? {
+            val label = if (!labelled) null else TextView(this).apply {
                 setTextColor(0xFFFFFFFF.toInt()); textSize = 12f; gravity = Gravity.CENTER
                 setShadowLayer(4f, 0f, 0f, 0xFF000000.toInt())
                 importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO // the button has the description
             }
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
             col.addView(b, LinearLayout.LayoutParams(dp(size), dp(size)))
-            col.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            if (label != null) {
+                col.addView(label, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(4) })
+            }
             controls.addView(col, LinearLayout.LayoutParams(dp(84), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp((80 - size) / 2)
             })
             return label
         }
-        muteLbl = column(muteBtn, 60); callLbl = column(callBtn, 80); routeLbl = column(routeBtn, 60); modeLbl = column(modeBtn, 60)
+        // The call button needs no caption: its colour and icon say it.
+        muteLbl = column(muteBtn, 60)!!; column(callBtn, 80, labelled = false)
+        routeLbl = column(routeBtn, 60)!!; modeLbl = column(modeBtn, 60)!!
         root.addView(controls, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM
         ))
@@ -261,7 +269,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         callBtn.kind = if (active) IconButton.Kind.HANGUP else IconButton.Kind.CALL
         callBtn.busy = connecting
         callBtn.contentDescription = getString(if (active) R.string.cd_hangup else R.string.cd_call)
-        callLbl.setText(if (active) R.string.lb_hangup else R.string.lb_call)
 
         muteBtn.kind = if (CallModel.muted) IconButton.Kind.MIC_OFF else IconButton.Kind.MIC
         muteBtn.contentDescription = getString(if (CallModel.muted) R.string.cd_unmute else R.string.cd_mute)
@@ -276,7 +283,6 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         routeBtn.kind = routeKind
         routeBtn.contentDescription = getString(routeCd)
         routeLbl.setText(routeLb)
-        routeBtn.alpha = if (active) 1f else 0.4f
 
         val fluid = visualMode == NativeBridge.MODE_FLUID
         modeBtn.kind = if (fluid) IconButton.Kind.FLUID else IconButton.Kind.FRACTAL

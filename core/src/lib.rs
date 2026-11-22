@@ -9,7 +9,9 @@ pub mod jitter;
 pub mod openai;
 pub mod pricing;
 pub mod rtc;
+pub mod shaderlog;
 pub mod state;
+pub mod visual;
 
 #[cfg(target_os = "android")]
 pub mod audio;

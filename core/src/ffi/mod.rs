@@ -9,11 +9,13 @@
 use crate::audio::AAudioBackend;
 use crate::call::{CallConfig, CallHandle, RealConnector};
 use crate::openai::Secret;
+use crate::render::{Cmd, Renderer, TouchEv};
 use crate::rtc::RtcConfig;
 use crate::state::{CallState, Shared};
 use jni::objects::{Global, JClass, JObject, JString};
 use jni::sys::{jboolean, jfloat, jint};
 use jni::{jni_sig, jni_str, EnvUnowned, JValue, JavaVM};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -34,6 +36,19 @@ struct Core {
 }
 
 static CORE: OnceLock<Core> = OnceLock::new();
+/// The renderer, alive while the SurfaceView has a Surface.
+static RENDER: Mutex<Option<Renderer>> = Mutex::new(None);
+/// The selected visual mode, kept here so a renderer started later begins in the right one.
+static VISUAL_MODE: AtomicI32 = AtomicI32::new(crate::render::MODE_FLUID);
+
+fn with_render(f: impl FnOnce(&Renderer)) {
+    if let Ok(g) = RENDER.lock() {
+        if let Some(r) = g.as_ref() {
+            f(r);
+        }
+    }
+}
+
 /// The active (or last) call. Locked only from JNI threads, never from audio callbacks.
 static CALL: Mutex<Option<CallHandle>> = Mutex::new(None);
 
@@ -167,10 +182,37 @@ pub extern "system" fn Java_app_lexi_NativeBridge_init<'l>(
 pub extern "system" fn Java_app_lexi_NativeBridge_surfaceCreated<'l>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
-    _surface: JObject<'l>,
+    surface: JObject<'l>,
 ) {
-    jni_guard!(env, |_e| {
-        log::info!("surfaceCreated (render arrives in Phase 6)");
+    jni_guard!(env, |e| {
+        let Some(core) = CORE.get() else {
+            log::error!("surfaceCreated before init");
+            return Ok(());
+        };
+        // SAFETY: `e` is the live JNIEnv of this native call and `surface` a live android.view.Surface.
+        let window = unsafe {
+            ndk::native_window::NativeWindow::from_surface(
+                e.get_raw().cast(),
+                surface.as_raw().cast(),
+            )
+        };
+        let Some(window) = window else {
+            log::error!("surfaceCreated: no ANativeWindow");
+            return Ok(());
+        };
+        let mode = VISUAL_MODE.load(Ordering::Relaxed);
+        if mode == crate::render::MODE_OFF {
+            log::info!("surfaceCreated: visuals are off (debug); no renderer");
+            return Ok(());
+        }
+        match Renderer::start(window, Arc::clone(&core.shared), mode) {
+            Ok(r) => {
+                let old = RENDER.lock().ok().and_then(|mut g| g.replace(r));
+                drop(old); // joins a previous renderer, if any
+                log::info!("surfaceCreated: renderer started (mode {mode})");
+            }
+            Err(err) => log::error!("surfaceCreated: cannot start the render thread: {err}"),
+        }
         Ok(())
     })
 }
@@ -184,6 +226,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_surfaceChanged<'l>(
 ) {
     jni_guard!(env, |_e| {
         log::info!("surfaceChanged {w}x{h}");
+        with_render(|r| r.send(Cmd::Resize));
         Ok(())
     })
 }
@@ -194,7 +237,12 @@ pub extern "system" fn Java_app_lexi_NativeBridge_surfaceDestroyed<'l>(
     _class: JClass<'l>,
 ) {
     jni_guard!(env, |_e| {
-        log::info!("surfaceDestroyed");
+        // The Surface is invalid once this returns: stop and join the render thread first.
+        let renderer = RENDER.lock().ok().and_then(|mut g| g.take());
+        if let Some(r) = renderer {
+            r.stop();
+        }
+        log::info!("surfaceDestroyed: renderer stopped");
         Ok(())
     })
 }
@@ -207,6 +255,8 @@ pub extern "system" fn Java_app_lexi_NativeBridge_setVisualMode<'l>(
 ) {
     jni_guard!(env, |_e| {
         log::info!("setVisualMode {mode}");
+        VISUAL_MODE.store(mode, Ordering::Relaxed);
+        with_render(|r| r.send(Cmd::Mode(mode)));
         Ok(())
     })
 }
@@ -221,8 +271,14 @@ pub extern "system" fn Java_app_lexi_NativeBridge_touch<'l>(
     y: jfloat,
 ) {
     jni_guard!(env, |_e| {
-        // Touch events are frequent; keep this at trace level (filtered out at Info).
-        log::trace!("touch action={action} id={pointer_id} x={x} y={y}");
+        with_render(|r| {
+            r.send(Cmd::Touch(TouchEv {
+                action,
+                id: pointer_id,
+                x,
+                y,
+            }))
+        });
         Ok(())
     })
 }
@@ -236,7 +292,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_pinch<'l>(
     fy: jfloat,
 ) {
     jni_guard!(env, |_e| {
-        log::trace!("pinch scale={scale} fx={fx} fy={fy}");
+        with_render(|r| r.send(Cmd::Pinch { scale, fx, fy }));
         Ok(())
     })
 }

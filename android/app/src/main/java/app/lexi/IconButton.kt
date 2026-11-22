@@ -1,6 +1,7 @@
 package app.lexi
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -20,11 +21,39 @@ class IconButton(context: Context) : View(context) {
     var busy = false
         set(v) { if (field != v) { field = v; invalidate() } }
 
+    private companion object {
+        /**
+         * The fractal button's glyph: Douady's rabbit, the Julia set for c = -0.123 + 0.745i, drawn white with
+         * a soft halo. It is computed once here (~10 ms) from the same iteration the fractal visual runs.
+         */
+        val julia: Bitmap by lazy {
+            val n = 96
+            val px = IntArray(n * n)
+            for (y in 0 until n) {
+                for (x in 0 until n) {
+                    var zr = (x / (n - 1f) - 0.5f) * 2.5f
+                    var zi = (0.5f - y / (n - 1f)) * 2.5f
+                    var i = 0
+                    while (i < 60 && zr * zr + zi * zi <= 16f) {
+                        val t = zr * zr - zi * zi - 0.123f
+                        zi = 2f * zr * zi + 0.745f
+                        zr = t
+                        i++
+                    }
+                    val alpha = if (i == 60) 255 else (255 * ((i - 3f) / 22f).coerceIn(0f, 1f) * 0.85f).toInt()
+                    px[y * n + x] = (alpha shl 24) or 0xFFFFFF
+                }
+            }
+            Bitmap.createBitmap(px, n, n, Bitmap.Config.ARGB_8888)
+        }
+    }
+
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND; color = Color.WHITE
     }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val path = Path()
     private val rect = RectF()
     private var pressedNow = false
@@ -118,9 +147,8 @@ class IconButton(context: Context) : View(context) {
                 c.drawPath(path, line)
             }
             Kind.FRACTAL -> {
-                c.drawCircle(s * 0.46f, s * 0.5f, s * 0.15f, line)
-                c.drawCircle(s * 0.68f, s * 0.5f, s * 0.07f, line)
-                c.drawCircle(s * 0.30f, s * 0.5f, s * 0.04f, fill)
+                r(0.10f, 0.10f, 0.90f, 0.90f)
+                c.drawBitmap(julia, null, rect, bitmapPaint)
             }
         }
     }
