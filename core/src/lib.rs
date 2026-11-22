@@ -12,6 +12,7 @@ pub mod pricing;
 pub mod rtc;
 pub mod shaderlog;
 pub mod state;
+pub mod tls;
 pub mod visual;
 
 #[cfg(target_os = "android")]

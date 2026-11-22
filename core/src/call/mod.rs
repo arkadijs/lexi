@@ -22,6 +22,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub enum ConnectError {
     Network,
     Auth,
+    /// The server says the phone's clock is off (HTTP 412).
+    Clock,
     RateLimited,
     Service,
     Other,
@@ -32,6 +34,7 @@ impl ConnectError {
         match self {
             Self::Network => "network",
             Self::Auth => "auth",
+            Self::Clock => "clock",
             Self::RateLimited => "rate",
             Self::Service => "service",
             Self::Other => "error",
@@ -105,6 +108,10 @@ pub struct CallConfig {
     /// Waits after the 1st, 2nd, 3rd failed reconnect attempt (SPEC §2.4: 0.5 s / 1 s / 2 s).
     pub backoff: [Duration; 3],
     pub max_reconnect_attempts: usize,
+    /// After the attempts above, keep retrying (with the last backoff) until this long after the connection was
+    /// lost, as long as the failures can pass (no network, service down). Found by the failure-mode tests: a
+    /// 5 s Wi-Fi drop ended a Gemini call because three retries used up 4 s. Auth/rate-limit errors never retry.
+    pub reconnect_window: Duration,
     /// Housekeeping period (mute sync, levels, timers).
     pub tick: Duration,
 }
@@ -119,6 +126,7 @@ impl Default for CallConfig {
                 Duration::from_secs(2),
             ],
             max_reconnect_attempts: 3,
+            reconnect_window: Duration::from_secs(20),
             tick: Duration::from_millis(50),
         }
     }
@@ -194,6 +202,7 @@ impl CallHandle {
             state: CallState::Idle,
             attempt: 0,
             max_attempts: 1,
+            reconnect_started: None,
             retry_at: None,
             audio_failures: 0,
             last_audio_restart: None,
@@ -256,6 +265,8 @@ struct Supervisor {
     state: CallState,
     attempt: usize,
     max_attempts: usize,
+    /// When the current reconnect started (None for the initial connect).
+    reconnect_started: Option<Instant>,
     retry_at: Option<Instant>,
     audio_failures: u32,
     last_audio_restart: Option<Instant>,
@@ -355,6 +366,7 @@ impl Supervisor {
         self.set_state(CallState::Reconnecting, None);
         self.attempt = 0;
         self.max_attempts = self.cfg.max_reconnect_attempts.max(1);
+        self.reconnect_started = Some(Instant::now());
         self.spawn_connect();
     }
 
@@ -434,6 +446,7 @@ impl Supervisor {
         match result {
             Ok(c) => {
                 self.attempt = 0;
+                self.reconnect_started = None;
                 self.audio_failures = 0;
                 if let Err(e) = self.audio.attach(c.mic, c.pcm) {
                     log::error!("audio attach failed: {e}");
@@ -458,7 +471,10 @@ impl Supervisor {
                     e,
                     ConnectError::Network | ConnectError::Service | ConnectError::Other
                 );
-                if retryable && self.attempt < self.max_attempts {
+                let in_window = self
+                    .reconnect_started
+                    .is_some_and(|t| t.elapsed() < self.cfg.reconnect_window);
+                if retryable && (self.attempt < self.max_attempts || in_window) {
                     let wait = self.cfg.backoff[(self.attempt - 1).min(2)];
                     self.retry_at = Some(Instant::now() + wait);
                     None
@@ -692,6 +708,7 @@ fn classify(e: &OpenAiError) -> ConnectError {
     match e {
         OpenAiError::Network(_) => ConnectError::Network,
         OpenAiError::Status(401 | 403) => ConnectError::Auth,
+        OpenAiError::Status(412) => ConnectError::Clock,
         OpenAiError::Status(429) => ConnectError::RateLimited,
         OpenAiError::Status(s) if *s >= 500 => ConnectError::Service,
         OpenAiError::Status(_) => ConnectError::Other,

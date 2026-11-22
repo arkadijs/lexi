@@ -1,8 +1,7 @@
 # Deploying lexi
 
 Kustomize layout: `base/` (Deployment, Service, Ingress, HPA, PDB, NetworkPolicy, ConfigMaps),
-`overlays/dev` (kind: 1 replica, no ingress/HPA/PDB, attestation off), `overlays/prod` (shared-key
-attestation, trusts the ingress' `X-Forwarded-For`), `overlays/cluster` (prod + host `lexi.example.com`,
+`overlays/prod` (shared-key attestation, trusts the ingress' `X-Forwarded-For`), `overlays/cluster` (prod + host `lexi.example.com`,
 locally built image), `components/servicemonitor` (optional, needs the Prometheus Operator).
 
 ## Secrets (never committed; referenced by the manifests)
@@ -11,12 +10,6 @@ locally built image), `components/servicemonitor` (optional, needs the Prometheu
 kubectl -n lexi create secret generic openai-api-key   --from-literal=OPENAI_API_KEY=sk-...
 kubectl -n lexi create secret generic lexi-attest-key  --from-literal=LEXI_ATTEST_SHARED_KEY="$(openssl rand -hex 32)"   # prod/remote
 ```
-
-## kind (dev)
-
-`OPENAI_API_KEY=sk-... scripts/kind-up.sh`, then
-`curl -XPOST localhost:8080/v1/call-token -H "X-Lexi-Install: $(printf 'a%.0s' $(seq 64))" -d '{}'`.
-(Written but not run in the environment that produced it: no docker/kind there.)
 
 ## deploy.example.com
 

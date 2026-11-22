@@ -1,0 +1,5 @@
+
+# Android library size (N1): fold identical functions and pack the relative relocations (RELR needs
+# Android 11+/API 30; the app's minSdk is 31).
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,--icf=all", "-C", "link-arg=-Wl,--pack-dyn-relocs=relr"]

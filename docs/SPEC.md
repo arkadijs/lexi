@@ -86,7 +86,7 @@ the current official docs before implementing them.
   free-tier key the session was closed with 1011 "exceeded your current quota"). `usageMetadata` arrives once per generation with the whole prompt
   again, so each is a delta; thinking tokens are billed as output. Measured: connect to live 1.4 s on the phone;
   Gemini 3.8 Live spends ~100-300 thinking tokens per turn (a `thinkingLevel` knob exists, `LEXI_GEMINI_THINKING`,
-  untested). Sessions last about 15 minutes of audio (no resumption yet). Gemini billing needs a prepaid balance
+  untested). Sessions last about 15 minutes of audio; that limit is accepted (decided 2026-11-22): no session resumption, the call simply ends (shown as ended by the other side) and the user calls again. Gemini billing needs a prepaid balance
   (HTTP 402 / close 1011 "prepayment credits are depleted" otherwise).
 
 - **Providers are compartmentalized.** Each provider has its own server module and Secret, its own core transport
@@ -174,7 +174,10 @@ the current official docs before implementing them.
 4. The call ends on: Hang up (UI or notification), remote close, fatal error, audio focus
    loss to a phone call (see §6.3), or the max-session guard (configurable, default 30 min).
 5. Network change (Wi-Fi ↔ cellular) → automatic reconnect with a **new** ephemeral key
-   (max 3 attempts, backoff 0.5 s/1 s/2 s). The conversation context is lost on reconnect in v1.
+   (backoff 0.5 s/1 s/2 s; the first 3 attempts always, then keep retrying every 2 s until 20 s after the connection was
+   lost, as long as the failure can pass: no network, service down; auth, clock and rate-limit errors stop at once). The
+   window was added after the failure-mode tests (a 5 s Wi-Fi drop ended a Gemini call). The conversation context is lost
+   on reconnect in v1.
 
 ### 2.6 Running call cost
 The app shows what the current call has cost so far. The server reports exactly what it bills in the `usage` of each
@@ -228,7 +231,7 @@ of those usages priced with a **price table built into the app**.
 
 | ID | Requirement |
 |---|---|
-| N1 | **Size**: release APK < **6 MB** (arm64-v8a). Rust `.so` < 4 MB stripped. No AndroidX Compose, no Kotlin coroutines library unless justified; only `androidx.core` allowed. |
+| N1 | **Size**: release APK < **6 MB** (arm64-v8a) and Rust `.so` < **6 MB** stripped (relaxed from 4 MB on 2026-11-22: measured 5.01 MB, the rest is dependencies we need). No AndroidX Compose, no Kotlin coroutines library unless justified; only `androidx.core` allowed. |
 | N2 | **minSdk 31** (Android 12; needed for `setCommunicationDevice`), **targetSdk** 36 (the current Play requirement, verified 2026-11-21; not mandatory for a sideloaded app, but there is no reason to run in older compatibility modes). ABIs: `arm64-v8a` (required), `armeabi-v7a` (optional build flag). |
 | N3 | **Latency**: tap-to-first-audio < 2.5 s on 4G (excluding model think time). Mouth-to-ear added by the client < 80 ms (20 ms frames + ≤ 60 ms playout buffer). |
 | N4 | **CPU/battery**: during a call with the screen off, app CPU < 5 % of one big core on a mid-range device; no rendering, no busy loops. |
@@ -357,7 +360,7 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
   `LEXI_VOICE` (default), `LEXI_VOICES` (allowed list), `LEXI_REASONING_EFFORT`, `LEXI_VAD_SILENCE_MS`,
   `LEXI_INSTRUCTIONS_FILE` (mounted ConfigMap), `LEXI_TOKEN_TTL_SECS`,
   `LEXI_RATE_PER_INSTALL` (default 30/hour), `LEXI_RATE_PER_IP` (default 120/hour),
-  `LEXI_ATTEST_MODE` (`off` | `shared-key` | `play-integrity`).
+  `LEXI_ATTEST_MODE` (`off` | `shared-key`).
 - Rate limiting: in-memory per replica in v1 (`governor`); optional Redis backend behind a feature flag.
 - Never log tokens, the API key, or the raw install ID. Redact the `Authorization` header in traces.
 - Graceful shutdown on SIGTERM (drain ≤ 10 s). Upstream timeout 5 s, one retry on 5xx/connect errors.
@@ -373,11 +376,10 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
   friends, so a leaked key is a manageable event. Rotation: replace the `lexi-attest-key` Secret, restart the
   server, rebuild the APK; old builds then get 401 until updated. If one friend's copy leaks or someone leaves,
   per-friend keys (several accepted keys on the server) are the next step.
-- `play-integrity`: **not planned** (it only works for apps distributed through Google Play). The stub behind the
-  `play-integrity` cargo feature is unused and may be deleted.
+- Play Integrity is not used: it only works for apps distributed through Google Play (the stub was deleted in Phase 7).
 
 ### 5.5 Kubernetes
-- Manifests with **kustomize** in `deploy/k8s/` (`base/` + `overlays/dev`, `overlays/prod`):
+- Manifests with **kustomize** in `deploy/k8s/` (`base/` + `overlays/prod`, plus `overlays/cluster` for the real cluster):
   Deployment (2+ replicas, `runAsNonRoot`, read-only root FS, all capabilities dropped,
   seccomp `RuntimeDefault`, requests 20m CPU / 32Mi, limits 200m / 64Mi), Service,
   Ingress (TLS via cert-manager annotation, host configurable), HPA (CPU 70 %),
@@ -464,5 +466,5 @@ lexi/
 5. Toggle Wi-Fi off mid-call → reconnects within 5 s.
 6. Visuals at ≥ 55 fps on a mid-range device; rendering stops when the screen is off.
 7. Release APK size < 6 MB.
-8. Server: `kubectl apply -k deploy/k8s/overlays/dev` works on a kind cluster; p99 latency < 400 ms
+8. Server: `scripts/deploy.sh` rolls out to the cluster; p99 latency < 400 ms
    (dominated by upstream); no secrets in the repo; image runs as non-root.

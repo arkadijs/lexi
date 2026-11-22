@@ -4,6 +4,7 @@
 # Build-time settings (see android/app/build.gradle.kts):
 #   LEXI_MINTER_URL=https://lexi.example.com   # default: debug http://localhost:8080 (adb reverse), release = remote
 #   LEXI_ATTEST_FROM_CLUSTER=1                        # read the shared attestation key from the cluster Secret
+#   LEXI_ATTEST_KEY=<key>                             # or give one key explicitly (per-friend builds)
 #   LEXI_COLD=1                                       # throwaway target volume = full dependency compile (use with --rerun-tasks)
 # Every build prints a [measure] summary of how many cores it really kept busy (scripts/measure-lib.sh).
 # Ships the working tree (never .envrc/.git/target), runs the builder image, copies results back.
@@ -32,7 +33,11 @@ JOBS="$(ssh "$HOST" nproc)"
 ENVFILE=""
 if [ "${LEXI_ATTEST_FROM_CLUSTER:-}" = 1 ]; then
   # Via process substitution + printf builtin: the key never appears in any command line.
-  ENVFILE="--env-file <(printf 'LEXI_ATTEST_KEY=%s\\n' \"\$(kubectl -n lexi get secret lexi-attest-key -o jsonpath='{.data.LEXI_ATTEST_SHARED_KEY}' | base64 -d)\")"
+  ENVFILE="--env-file <(printf 'LEXI_ATTEST_KEY=%s\\n' \"\$(kubectl -n lexi get secret lexi-attest-key -o jsonpath='{.data.LEXI_ATTEST_SHARED_KEY}' | base64 -d | cut -d, -f1)\")"
+fi
+if [ -n "${LEXI_ATTEST_KEY:-}" ]; then
+  # A specific key (e.g. one friend's): it travels in the stdin script (never in a command line).
+  ENVFILE="--env-file <(printf 'LEXI_ATTEST_KEY=%s\\n' '$LEXI_ATTEST_KEY')"
 fi
 MINTER_ENV=""
 [ -n "${LEXI_MINTER_URL:-}" ] && MINTER_ENV="-e LEXI_MINTER_URL=$LEXI_MINTER_URL"

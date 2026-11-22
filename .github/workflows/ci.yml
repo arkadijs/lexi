@@ -32,7 +32,7 @@ jobs:
           kubeconform: "0.6.7"
       - name: kustomize build | kubeconform
         run: |
-          for o in dev prod remote; do
+          for o in prod remote; do
             kubectl kustomize deploy/k8s/overlays/$o | kubeconform -strict -summary -ignore-missing-schemas
           done
   image:

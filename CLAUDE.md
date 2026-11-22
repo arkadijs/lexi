@@ -1,10 +1,10 @@
 # CLAUDE.md — working on Lexi
 
 Lexi: a generic voice chat bot for Android: you talk, it talks back, and it can search the web for current
-events (more tools may follow). It is not a vocabulary or language coach. Rust core (NDK) + thin Kotlin shell +
-a Rust server (`server/`, crate `lexi`, deployed on Kubernetes as `lexi`) that mints ephemeral tokens and runs web
-searches. Talks WebRTC to the OpenAI Realtime API (`gpt-realtime-2.1-mini`, or `gpt-realtime-2.1` as "Smart");
-Google Gemini Live (WebSocket) is being added as a second provider.
+events (more tools may follow). Rust core (NDK) + thin Kotlin shell + a Rust server (`server/`, crate `lexi`,
+deployed on Kubernetes as `lexi`) that mints ephemeral tokens and runs web searches.
+Talks WebRTC to the OpenAI Realtime API (`gpt-realtime-2.1-mini`, or `gpt-realtime-2.1` as "Smart");
+Google Gemini Live (WebSocket) added as a second provider.
 
 - **Source of truth:** `docs/SPEC.md` (what) and `docs/PLAN.md` (phases, checkboxes). Work one phase at a time; tick boxes and commit at the end of each phase.
 - **Never** put an OpenAI or Google API key, keystore, or `.env` in the repo, code, logs, or test fixtures. Ephemeral tokens must never be logged.
@@ -18,5 +18,5 @@ Google Gemini Live (WebSocket) is being added as a second provider.
   - App: `cd android && ./gradlew assembleDebug`
   - Server: `OPENAI_API_KEY=... cargo run -p lexi`
   - Desktop harness: `cargo run -p desk -- --minter http://localhost:8080`
-  - k8s dev: `scripts/kind-up.sh`
+  - Deploy: `scripts/deploy.sh` (see `docs/RUNBOOK.md`)
 - If something in the spec turns out to be wrong or impossible, stop, explain, and propose an edit to `docs/SPEC.md` instead of silently diverging.

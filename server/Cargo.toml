@@ -1,13 +1,10 @@
 [package]
 name = "lexi"
-description = "Ephemeral-token minting service for the OpenAI Realtime API (SPEC §5)"
+description = "Lexi server: ephemeral tokens for OpenAI Realtime and Gemini Live, and web search (SPEC §5)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
-
-[features]
-play-integrity = []
 
 [lints]
 workspace = true

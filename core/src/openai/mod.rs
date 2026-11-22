@@ -82,8 +82,17 @@ fn map_err(e: ureq::Error) -> OpenAiError {
     }
 }
 
+/// TLS for ureq: rustls with the core's single crypto provider (see `crate::tls`).
+fn tls() -> ureq::tls::TlsConfig {
+    ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::Rustls)
+        .unversioned_rustls_crypto_provider(std::sync::Arc::new(crate::tls::provider()))
+        .build()
+}
+
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
+        .tls_config(tls())
         .timeout_global(Some(HTTP_TIMEOUT))
         .build()
         .into()
@@ -166,6 +175,7 @@ pub fn search_via_minter(
 ) -> Result<String, OpenAiError> {
     let url = format!("{}/v1/search", minter_url.trim_end_matches('/'));
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .tls_config(tls())
         .timeout_global(Some(SEARCH_TIMEOUT))
         .build()
         .into();

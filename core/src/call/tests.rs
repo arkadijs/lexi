@@ -153,6 +153,7 @@ fn fast_cfg() -> CallConfig {
         max_session: Duration::from_secs(60),
         backoff: [Duration::from_millis(10); 3],
         max_reconnect_attempts: 3,
+        reconnect_window: Duration::ZERO,
         tick: Duration::from_millis(5),
     }
 }
@@ -299,6 +300,68 @@ fn reconnect_gives_up_after_three_attempts() {
 }
 
 #[test]
+fn a_longer_outage_keeps_retrying_inside_the_reconnect_window() {
+    // Eight failed reconnects (more than the three quick attempts), then the network is back.
+    let mut script = vec![Ok(())];
+    script.extend((0..8).map(|_| Err(ConnectError::Network)));
+    let c = MockConnector::new(script);
+    let cfg = CallConfig {
+        reconnect_window: Duration::from_secs(5),
+        ..fast_cfg()
+    };
+    let rig = start(Arc::clone(&c), cfg, Arc::default());
+    rig.wait_state(CallState::Live);
+    rig.handle.network_changed();
+    wait_until("ninth reconnect attempt", || c.calls() == 10);
+    wait_until("live again", || {
+        rig.last().is_some_and(|(s, _)| s == CallState::Live)
+            && rig.seq().contains(&CallState::Reconnecting)
+    });
+    assert!(
+        !rig.seq().contains(&CallState::Error),
+        "never gave up: {:?}",
+        rig.seq()
+    );
+    rig.handle.hangup();
+    rig.wait_state(CallState::Ended);
+}
+
+#[test]
+fn the_reconnect_window_ends_and_auth_errors_never_retry() {
+    // Window of 150 ms: keeps trying past three attempts, then gives up with the network code.
+    let mut script = vec![Ok(())];
+    script.extend((0..200).map(|_| Err(ConnectError::Network)));
+    let c = MockConnector::new(script);
+    let cfg = CallConfig {
+        reconnect_window: Duration::from_millis(150),
+        ..fast_cfg()
+    };
+    let rig = start(Arc::clone(&c), cfg, Arc::default());
+    rig.wait_state(CallState::Live);
+    rig.handle.network_changed();
+    rig.wait_state(CallState::Error);
+    assert_eq!(rig.last().unwrap().1.as_deref(), Some("network"));
+    assert!(
+        c.calls() > 4,
+        "retried beyond three attempts: {}",
+        c.calls()
+    );
+
+    // An auth failure during a reconnect stops at once, window or not.
+    let c = MockConnector::new(vec![Ok(()), Err(ConnectError::Auth)]);
+    let cfg = CallConfig {
+        reconnect_window: Duration::from_secs(5),
+        ..fast_cfg()
+    };
+    let rig = start(Arc::clone(&c), cfg, Arc::default());
+    rig.wait_state(CallState::Live);
+    rig.handle.network_changed();
+    rig.wait_state(CallState::Error);
+    assert_eq!(rig.last().unwrap().1.as_deref(), Some("auth"));
+    assert_eq!(c.calls(), 2);
+}
+
+#[test]
 fn initial_connect_failure_is_a_single_attempt_with_a_code() {
     let c = MockConnector::new(vec![Err(ConnectError::Auth)]);
     let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
@@ -306,6 +369,17 @@ fn initial_connect_failure_is_a_single_attempt_with_a_code() {
     assert_eq!(rig.last().unwrap().1.as_deref(), Some("auth"));
     assert_eq!(c.calls(), 1);
     assert_eq!(rig.audio.attach.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_clock_error_is_reported_with_its_own_code_and_not_retried() {
+    let c = MockConnector::new(vec![Ok(()), Err(ConnectError::Clock)]);
+    let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
+    rig.wait_state(CallState::Live);
+    rig.handle.network_changed();
+    rig.wait_state(CallState::Error);
+    assert_eq!(rig.last().unwrap().1.as_deref(), Some("clock"));
+    assert_eq!(c.calls(), 2);
 }
 
 #[test]

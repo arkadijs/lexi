@@ -343,6 +343,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             CallModel.ERROR -> getString(when (CallModel.detail) {
                 "network" -> R.string.st_no_network
                 "auth" -> R.string.st_auth
+                "clock" -> R.string.st_clock
                 "rate" -> R.string.st_rate
                 "service" -> R.string.st_service
                 "audio" -> R.string.st_audio

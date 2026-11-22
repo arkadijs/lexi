@@ -143,12 +143,20 @@ fn authorize(
         return Err(Box::new(too_many("ip", retry)));
     }
     let attest = headers.get(ATTEST_HEADER).and_then(|v| v.to_str().ok());
-    if state.attestor.verify(attest).is_err() {
-        tracing::warn!("attestation failed");
-        return Err(Box::new(err(
-            StatusCode::UNAUTHORIZED,
-            "attestation failed",
-        )));
+    match state.attestor.verify(attest) {
+        Ok(()) => {}
+        // 412: the key is right but the phone's clock is off by more than 5 minutes (the app says so).
+        Err(attest::AttestError::Skew) => {
+            tracing::warn!("attestation: client clock skew");
+            return Err(Box::new(err(StatusCode::PRECONDITION_FAILED, "clock skew")));
+        }
+        Err(attest::AttestError::Invalid) => {
+            tracing::warn!("attestation failed");
+            return Err(Box::new(err(
+                StatusCode::UNAUTHORIZED,
+                "attestation failed",
+            )));
+        }
     }
     if let Err(retry) = per_install.check(&install) {
         return Err(Box::new(too_many("install", retry)));

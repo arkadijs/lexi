@@ -24,7 +24,7 @@ Port 8080: `POST /v1/call-token`, `/healthz`, `/readyz`. Port 9090: `/metrics`.
 | `LEXI_INSTRUCTIONS_FILE` | built-in prompt (language behaviour only: greet in Russian, follow a language switch) | Mounted ConfigMap in k8s. |
 | `LEXI_TOKEN_TTL_SECS` | `60` | Must be 10..=7200 (OpenAI limits). |
 | `LEXI_RATE_PER_INSTALL` / `LEXI_RATE_PER_IP` | `30` / `120` per hour | In-memory, per replica. |
-| `LEXI_ATTEST_MODE` | `off` | `off` \| `shared-key` (needs `LEXI_ATTEST_SHARED_KEY`) \| `play-integrity` (feature, stub until Phase 7). |
+| `LEXI_ATTEST_MODE` | `off` | `off` \| `shared-key` (needs `LEXI_ATTEST_SHARED_KEY`: one key or several, comma-separated, one per friend; see docs/RUNBOOK.md). |
 | `LEXI_TRUST_FORWARDED_FOR` | `false` | Use the rightmost `X-Forwarded-For` entry as client IP (only behind a trusted ingress). |
 | `LEXI_BIND` / `LEXI_METRICS_BIND` | `0.0.0.0:8080` / `0.0.0.0:9090` | |
 | `LEXI_UPSTREAM_TIMEOUT_MS` / `LEXI_REQUEST_TIMEOUT_MS` | `5000` / `12000` | |

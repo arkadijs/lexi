@@ -32,11 +32,10 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 
 ## Phase 2 — Container + Kubernetes (`server/Dockerfile`, `deploy/k8s/`)
 - [x] Multi-stage Dockerfile: build static musl binary (cargo-chef for caching) → `distroless/static:nonroot`. Multi-arch (amd64, arm64) via buildx. (built and run on remote for amd64; the arm64/buildx multi-arch build is in CI only, not yet run)
-- [x] Kustomize base + `dev`/`prod` overlays per SPEC §5.5. The Secret is referenced, not committed; document `kubectl create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...`. (plus an `remote` overlay for the real cluster; see deploy/k8s/README.md)
-- [x] `scripts/kind-up.sh`: create a kind cluster, load the image, apply the dev overlay, port-forward. (written, **not run**: no docker/kind available here; the dev overlay was only server-side dry-run on remote)
+- [x] Kustomize base + `prod` overlay per SPEC §5.5 (a kind-oriented `dev` overlay existed and was removed on 2026-11-22: local development is `cargo run -p lexi`, the cluster is remote). The Secret is referenced, not committed; document `kubectl create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...`. (plus an `remote` overlay for the real cluster; see deploy/k8s/README.md)
 - [x] CI: build the image, `kustomize build | kubeconform -strict`, Trivy scan (fail on HIGH/CRITICAL). (jobs added to ci.yml, **not yet run in CI**)
 
-**Done when:** on kind, the pod is Ready, runs as non-root with a read-only FS, and `curl` through the port-forward returns a token; image < 15 MB.
+**Done when:** on the cluster (remote), the pod is Ready, runs as non-root with a read-only FS, and `curl` through the ingress returns a token; image < 15 MB.
 
 ## Phase 3 — Desktop WebRTC proof (`core/rtc`, `core/openai`, `core/codec`, `devtools/desk`)
 **The critical-risk phase.** Everything here must be platform-independent and reused unchanged on Android.
@@ -87,7 +86,7 @@ N4's 5 % budget (see android/README.md).
 - [x] Default voice chosen by listening: Cedar (`LEXI_VOICE` in the ConfigMap, `Voices.kt`); Alloy as the alternative.
 - [x] Talkativeness clamp: conversation-style prompt with hard length limits and a quiet-on-stop rule (SPEC §2.1);
   replies 3-8x shorter in the live-API A/B test.
-- [ ] Verify on the phone: greeting, language switch, voice change, the new latency and the new prompt in a real conversation.
+- [x] Verified on the phone by the user (2026-11-22): greeting, voices, latency and the prompt in real conversations; the double greeting is gone.
 
 ## Phase 5b — Running call cost (`core/pricing`, ffi, UI)
 Show what the current call has cost so far (SPEC §2.6). The price table of `gpt-realtime-2.1-mini` is built into the app.
@@ -116,7 +115,7 @@ Show what the current call has cost so far (SPEC §2.6). The price table of `gpt
 - [x] Minter: `model` in the token request (allowlist `LEXI_MODELS`), full-model prices in the core, cost rounded up to the cent.
 - [x] Prompt checked against the full model (equally short replies; stop answered in under 2 s).
 - [x] Web search: `web_search` function tool, minter `POST /v1/search` (Responses API), tool-call loop in the core, search cost in the total, verified end to end with the desk harness on both models (3 s search, 5-9 s spoken answer). The bot is named Lexi.
-- [ ] Not verified: a spoken web-search conversation on the phone (adb cannot speak), the search cost estimate against the OpenAI dashboard.
+- [x] Spoken web search on the phone confirmed by the user (2026-11-22). Still open: the search cost estimate against the OpenAI dashboard.
 
 ## Phase 6c — Service renamed to `lexi`; gender and greeting rules (2026-11-22)
 - [x] `lexi-minter` → `lexi` (crate, `server/`, k8s, host `lexi.example.com`); old cluster resources deleted; app rebuilt for the new host.
@@ -131,15 +130,17 @@ Verified with the user's keys: `models/gemini-3.8-live`; `POST /v1beta/auth_toke
 - [x] App: provider pill left of the voice pill (OpenAI | Google), voice list per provider, model pill fixed to "Live" for Google, all locked during a call.
 - [x] Verified live: desk harness and the phone (live in 1.4 s, greeting, cost); Charon says "рад", Kore "рада"; web search answered by voice (search 3.4 s).
 - [x] Voice samples: `Download/lexi-voices/gemini-<voice>-ru|en.wav` on the phone (Google's TTS model as a proxy; rate-limited, partial).
-- [ ] The offered Gemini voices (Charon, Fenrir, Kore, Leda) are a placeholder until the user has listened to the samples.
-- [ ] Not done: session resumption (Live audio sessions end after ~15 minutes), `thinkingLevel` (untested), Gemini price check against a real bill, barge-in with real audio, Gemini on a prepaid-credits key (the second key has no credits; the first key works for Live).
+- [x] The offered Gemini voices (Charon, Fenrir, Kore, Leda) were confirmed by the user (2026-11-22).
+- [x] Session length: Live audio sessions end after ~15 minutes; accepted by the user, no resumption will be built.
+- [ ] Open: `thinkingLevel` (untested), Gemini price check against a real bill. (The funded `GOOGLE_API_KEY` is deployed; both providers confirmed working on the phone by the user.)
 
 ## Phase 7 — Hardening, size, release
-- [ ] Measure and report sizes (`.so` and the release APK); remove unused deps and features until N1 is met.
-- [ ] Attestation runbook instead of Play Integrity (the app is sideloaded, not on Play): document key rotation (Secret → restart → rebuild); optionally accept several keys on the minter (per-friend keys). Delete the unused `play-integrity` stub.
-- [ ] Failure-mode tests from SPEC N5; battery check for 10 min of screen-off calling.
-- [ ] Release signing for sideloading: a keystore kept outside the repo (env/CI secret), `apksigner`-signed APK; CI builds it on tag and attaches it to a release. Keep the keystore backed up: a lost key means friends must uninstall before updating.
-- [ ] `README.md`: setup, build, run minter locally, deploy to k8s, configure the app's minter URL (`BuildConfig` field per build type).
+- [x] Sizes (2026-11-22, `scripts/size-report.sh`): the stripped `.so` was 5.55 MB at the start of the phase and is **5.01 MB** now (target relaxed to 6 MB on 2026-11-22: **met**); the signed release APK is **5.09 MB** (target 6 MB: met). What helped: one TLS crypto stack instead of two (rustls and ureq on aws-lc, which str0m's DTLS already links; `ring` gone, -310 KB) and linker flags in `.cargo/config.toml` (`--icf=all`, `--pack-dyn-relocs=relr`, -222 KB). What is left is mostly dependencies we need: core/alloc/std ~640 KB, str0m + dimpl + sctp ~520 KB, `combine` (SDP parser) 205 KB, rustls 160 KB, the C crypto of aws-lc ~430 KB, Opus ~160 KB. Reaching 4 MB would have meant replacing str0m or the crypto, which is not worth it for a sideloaded app: **N1 relaxed to ".so < 6 MB, APK < 6 MB"** by the user (SPEC updated).
+- [x] Attestation runbook instead of Play Integrity: `docs/RUNBOOK.md` (add/revoke a friend's key, rotation, provider keys); the server accepts several comma-separated keys (`LEXI_ATTEST_SHARED_KEY`), tested; the `play-integrity` stub is deleted.
+- [x] Failure-mode tests from SPEC N5 on the phone (`docs/FAILURE-MODES.md`): 14 scenarios, 2 bugs found and fixed (reconnect gave up after ~4 s; a wrong phone clock was reported as an auth error). Wired headset and output-device transitions were verified by the user; still untested: Bluetooth headsets and phone-call audio focus.
+- [x] Battery power measured unplugged over wireless adb (`scripts/power-test.sh`, results and estimates in `docs/POWER.md`): the fluid costs +1.06 W, the fractal +0.78 W, a muted call +0.35-0.45 W; a screen-on call lasts ~9 h with the fluid, ~17 h without visuals. **Not resolved:** the screen-off call (the method has a ~0.5-0.7 W floor, so it is only bounded above by 0.7 W); needs a 30-60 min run without adb.
+- [~] Release signing for sideloading: `scripts/release-keystore.sh` (key in `~/.config/lexi`, outside the repo) and `scripts/release-android.sh` (build, zipalign, apksigner on remote, key over ssh stdin) work; the first signed APK `dist/lexi-0.1.0.apk` was built and installed on the phone (cert SHA-256 a4724756...3596). The user must back up `~/.config/lexi/release.{jks,pass}`. **Not done:** CI building it on a tag (the workflows have never run: no remote), and a spoken call on the release build (a Google sign-in prompt covered the phone's screen during the check).
+- [x] `README.md`: setup, build, run the server locally, deploy, configure the app's server URL.
 
 **Done when:** all of SPEC §10 passes; CI produces a signed APK and the minter image on a tag.
 

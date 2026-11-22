@@ -809,3 +809,63 @@ async fn google_works_without_an_openai_key_and_openai_without_a_google_key() {
     );
     // The reverse is covered by google_provider_needs_its_own_key_and_maps_upstream_errors.
 }
+
+#[tokio::test]
+async fn several_attestation_keys_are_accepted_one_per_friend() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .mount(&up)
+        .await;
+    let r = router(config(
+        &up.uri(),
+        &[
+            ("LEXI_ATTEST_MODE", "shared-key"),
+            ("LEXI_ATTEST_SHARED_KEY", "alice, bob ,carol"),
+        ],
+    ));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    for (who, ip, expect) in [
+        ("alice", "10.0.0.1", StatusCode::OK),
+        ("bob", "10.0.0.2", StatusCode::OK),
+        ("carol", "10.0.0.3", StatusCode::OK),
+        ("mallory", "10.0.0.4", StatusCode::UNAUTHORIZED),
+    ] {
+        let h = sign(&Secret::new(who), now).unwrap();
+        let (s, ..) = send(&r, post(Some(INSTALL), Some(&h), ip)).await;
+        assert_eq!(s, expect, "{who}");
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_phone_clock_is_reported_only_to_holders_of_a_valid_key() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .expect(0)
+        .mount(&up)
+        .await;
+    let r = router(config(
+        &up.uri(),
+        &[
+            ("LEXI_ATTEST_MODE", "shared-key"),
+            ("LEXI_ATTEST_SHARED_KEY", "k"),
+        ],
+    ));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // Right key, clock 10 minutes ahead: 412 "clock skew" (the app tells the user to fix the time).
+    let h = sign(&Secret::new("k"), now + 600).unwrap();
+    let (s, _, body) = send(&r, post(Some(INSTALL), Some(&h), "10.0.0.1")).await;
+    assert_eq!(s, StatusCode::PRECONDITION_FAILED);
+    assert!(body.contains("clock skew"));
+    // Wrong key with the same bad clock: plain 401, so the clock hint is no oracle for guessing keys.
+    let h = sign(&Secret::new("wrong"), now + 600).unwrap();
+    let (s, ..) = send(&r, post(Some(INSTALL), Some(&h), "10.0.0.2")).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}

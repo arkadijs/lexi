@@ -27,7 +27,6 @@ impl fmt::Debug for Secret {
 pub enum AttestMode {
     Off,
     SharedKey,
-    PlayIntegrity,
 }
 
 #[derive(Debug, Clone)]
@@ -75,7 +74,8 @@ pub struct Config {
     pub rate_search_per_install: u32,
     pub rate_search_per_ip: u32,
     pub attest_mode: AttestMode,
-    pub attest_shared_key: Option<Secret>,
+    /// Accepted `shared-key` keys (LEXI_ATTEST_SHARED_KEY, comma-separated).
+    pub attest_keys: Vec<Secret>,
     /// Trust the rightmost `X-Forwarded-For` entry (set by our ingress) as the client IP.
     pub trust_forwarded_for: bool,
     pub upstream_timeout: Duration,
@@ -159,21 +159,18 @@ impl Config {
         let attest_mode = match get("LEXI_ATTEST_MODE").as_deref().unwrap_or("off") {
             "off" => AttestMode::Off,
             "shared-key" => AttestMode::SharedKey,
-            "play-integrity" => {
-                if cfg!(feature = "play-integrity") {
-                    AttestMode::PlayIntegrity
-                } else {
-                    return Err(
-                        "LEXI_ATTEST_MODE=play-integrity needs the `play-integrity` feature".into(),
-                    );
-                }
-            }
             other => return Err(format!("LEXI_ATTEST_MODE: unknown mode {other:?}")),
         };
-        let attest_shared_key = get("LEXI_ATTEST_SHARED_KEY")
-            .filter(|s| !s.is_empty())
-            .map(Secret::new);
-        if attest_mode == AttestMode::SharedKey && attest_shared_key.is_none() {
+        // One key, or several separated by commas: one per friend (revoke one by removing it) or two during
+        // a rotation (old and new accepted until every app is rebuilt).
+        let attest_keys: Vec<Secret> = get("LEXI_ATTEST_SHARED_KEY")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(Secret::new)
+            .collect();
+        if attest_mode == AttestMode::SharedKey && attest_keys.is_empty() {
             return Err("LEXI_ATTEST_MODE=shared-key requires LEXI_ATTEST_SHARED_KEY".into());
         }
 
@@ -291,7 +288,7 @@ impl Config {
             rate_search_per_install: parse(&get, "LEXI_RATE_SEARCH_PER_INSTALL", 60)?,
             rate_search_per_ip: parse(&get, "LEXI_RATE_SEARCH_PER_IP", 240)?,
             attest_mode,
-            attest_shared_key,
+            attest_keys,
             trust_forwarded_for: parse(&get, "LEXI_TRUST_FORWARDED_FOR", false)?,
             upstream_timeout: Duration::from_millis(parse(&get, "LEXI_UPSTREAM_TIMEOUT_MS", 5000)?),
             request_timeout: Duration::from_millis(parse(&get, "LEXI_REQUEST_TIMEOUT_MS", 14000)?),
