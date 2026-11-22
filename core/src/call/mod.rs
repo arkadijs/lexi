@@ -6,6 +6,7 @@
 //! Android (where the backend is AAudio). One supervisor thread owns everything; the network is
 //! only touched on short-lived connect workers so a hang-up is never blocked by an HTTP call.
 
+use crate::gemini::{self, GeminiSession};
 use crate::jitter::ring::PcmConsumer;
 use crate::openai::{self, attest, OpenAiError, Secret, ServerEvent};
 use crate::pricing;
@@ -153,6 +154,10 @@ enum Msg {
 /// search model's tokens (a fixed 8 000-token block of input at gpt-4.1-mini rates and ~600 output tokens;
 /// measured 2026-11-22: 8 174 in / 563 out). About $0.014; rounded up to $0.015.
 const SEARCH_COST_NANO: u64 = 15_000_000;
+
+/// One query of Google's built-in search in a Gemini Live session: $14 per 1000 queries (the first 5000 a month
+/// are free, which the readout ignores, so it can only err high).
+const GOOGLE_SEARCH_QUERY_NANO: u64 = 14_000_000;
 
 #[derive(Debug)]
 pub struct CallHandle {
@@ -395,6 +400,12 @@ impl Supervisor {
                     }
                 }
             }
+            SessionEvent::Server(ServerEvent::WebSearches { count }) => {
+                if self.model.as_deref().and_then(pricing::rates).is_some() {
+                    self.cost_nano += u64::from(count) * GOOGLE_SEARCH_QUERY_NANO;
+                    (self.on_cost)(pricing::to_micro_usd(self.cost_nano));
+                }
+            }
             SessionEvent::Server(ServerEvent::Error { error }) => {
                 // Never log the message body; type/code are enough to diagnose.
                 log::warn!(
@@ -627,6 +638,23 @@ impl Session for RealSession {
     }
 }
 
+struct GeminiLive(GeminiSession);
+
+impl Session for GeminiLive {
+    fn send_event(&self, json: String) {
+        self.0.send_event(json);
+    }
+    fn set_muted(&self, muted: bool) {
+        self.0.set_muted(muted);
+    }
+    fn levels(&self) -> (f32, f32) {
+        (self.0.levels.mic(), self.0.levels.bot())
+    }
+    fn close(self: Box<Self>) {
+        self.0.close();
+    }
+}
+
 struct Forward(EventSink);
 
 impl Handler for Forward {
@@ -653,7 +681,11 @@ pub struct RealConnector {
     pub voice: Option<String>,
     /// Requested model (`None` = the minter's default).
     pub model: Option<String>,
+    /// `openai` (default) or `google`.
+    pub provider: Option<String>,
     pub rtc: RtcConfig,
+    /// Where Gemini Live connects (tests override it).
+    pub gemini: gemini::Endpoint,
 }
 
 fn classify(e: &OpenAiError) -> ConnectError {
@@ -683,17 +715,28 @@ impl Connector for RealConnector {
             attest.as_deref(),
             self.voice.as_deref(),
             self.model.as_deref(),
+            self.provider.as_deref(),
         )
         .map_err(|e| {
             log::warn!("token request failed: {e}");
             classify(&e)
         })?;
         let t_token = t0.elapsed();
-        let (session, mic, pcm) =
-            RtcSession::start(self.rtc.clone(), &minted.token, Forward(events)).map_err(|e| {
-                log::warn!("session start failed: {e}");
-                ConnectError::Network
-            })?;
+        let (session, mic, pcm): (Box<dyn Session>, _, _) = if minted.provider == "google" {
+            let (s, mic, pcm) = GeminiSession::start(&self.gemini, &minted.token, Forward(events))
+                .map_err(|e| {
+                    log::warn!("gemini session start failed: {e}");
+                    ConnectError::Network
+                })?;
+            (Box::new(GeminiLive(s)), mic, pcm)
+        } else {
+            let (s, mic, pcm) = RtcSession::start(self.rtc.clone(), &minted.token, Forward(events))
+                .map_err(|e| {
+                    log::warn!("session start failed: {e}");
+                    ConnectError::Network
+                })?;
+            (Box::new(RealSession(s)), mic, pcm)
+        };
         log::info!(
             "connect timing: token {} ms, offer + sdp exchange {} ms",
             t_token.as_millis(),
@@ -701,7 +744,7 @@ impl Connector for RealConnector {
         );
         Ok(Connected {
             model: minted.model,
-            session: Box::new(RealSession(session)),
+            session,
             mic,
             pcm,
         })

@@ -94,6 +94,8 @@ pub struct MintedToken {
     pub token: Secret,
     pub expires_at: i64,
     pub model: String,
+    /// `openai` (WebRTC) or `google` (Gemini Live WebSocket).
+    pub provider: String,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +103,8 @@ struct MinterResponse {
     token: String,
     expires_at: i64,
     model: String,
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 /// Ask the minter for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID;
@@ -111,6 +115,7 @@ pub fn mint_from_minter(
     attest: Option<&str>,
     voice: Option<&str>,
     model: Option<&str>,
+    provider: Option<&str>,
 ) -> Result<MintedToken, OpenAiError> {
     let url = format!("{}/v1/call-token", minter_url.trim_end_matches('/'));
     let mut req = agent().post(&url).header("X-Lexi-Install", install_hash);
@@ -123,6 +128,9 @@ pub fn mint_from_minter(
     }
     if let Some(m) = model {
         body.insert("model".into(), m.into());
+    }
+    if let Some(p) = provider {
+        body.insert("provider".into(), p.into());
     }
     let body = serde_json::Value::Object(body).to_string();
     let mut resp = req
@@ -140,6 +148,7 @@ pub fn mint_from_minter(
         token: Secret::new(r.token),
         expires_at: r.expires_at,
         model: r.model,
+        provider: r.provider.unwrap_or_else(|| "openai".into()),
     })
 }
 
@@ -263,6 +272,7 @@ pub fn mint_with_dev_key(
         token: Secret::new(r.value),
         expires_at: r.expires_at,
         model: opts.model.clone(),
+        provider: "openai".into(),
     })
 }
 
@@ -334,6 +344,7 @@ mod tests {
             token: Secret::new("ek_zzz"),
             expires_at: 1,
             model: "m".into(),
+            provider: "openai".into(),
         };
         assert!(!format!("{m:?}").contains("ek_zzz"));
     }
@@ -371,7 +382,7 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        let t = mint_from_minter(&url, &"a".repeat(64), None, None, None).unwrap();
+        let t = mint_from_minter(&url, &"a".repeat(64), None, None, None, None).unwrap();
         assert_eq!(
             (t.token.expose(), t.expires_at, t.model.as_str()),
             ("ek_x", 123, "gpt-realtime-2.1-mini")
@@ -395,6 +406,7 @@ mod tests {
             Some("x-att"),
             Some("cedar"),
             Some("gpt-realtime-2.1"),
+            Some("google"),
         )
         .unwrap();
         let req = h.join().unwrap().to_ascii_lowercase();
@@ -404,7 +416,7 @@ mod tests {
             serde_json::from_str(req.rsplit("\r\n\r\n").next().unwrap()).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({"voice":"cedar","model":"gpt-realtime-2.1"}),
+            serde_json::json!({"voice":"cedar","model":"gpt-realtime-2.1","provider":"google"}),
             "{req}"
         );
     }

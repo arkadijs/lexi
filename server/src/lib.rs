@@ -1,7 +1,8 @@
-//! lexi-minter: issues one short-lived OpenAI ephemeral key per call (SPEC §5).
+//! lexi: issues one short-lived OpenAI ephemeral key per call (SPEC §5).
 
 pub mod attest;
 pub mod config;
+pub mod gemini;
 pub mod openai;
 pub mod ratelimit;
 
@@ -31,6 +32,7 @@ const ATTEST_HEADER: &str = "x-lexi-attest";
 pub struct AppState {
     pub cfg: Config,
     pub openai: OpenAiClient,
+    pub gemini: gemini::GeminiClient,
     pub attestor: Attestor,
     pub per_install: Limiter,
     pub per_ip: Limiter,
@@ -41,6 +43,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(cfg: Config) -> Result<Arc<Self>, String> {
         let openai = OpenAiClient::new(&cfg).map_err(|e| format!("http client: {e}"))?;
+        let gemini = gemini::GeminiClient::new(&cfg).map_err(|e| format!("http client: {e}"))?;
         let attestor = Attestor::from_config(&cfg)?;
         Ok(Arc::new(Self {
             per_install: Limiter::per_hour(cfg.rate_per_install),
@@ -48,6 +51,7 @@ impl AppState {
             per_search_install: Limiter::per_hour(cfg.rate_search_per_install),
             per_search_ip: Limiter::per_hour(cfg.rate_search_per_ip),
             openai,
+            gemini,
             attestor,
             cfg,
         }))
@@ -61,8 +65,11 @@ struct TokenRequest {
     locale: Option<String>,
     /// One of the configured `LEXI_VOICES`; absent = the default voice.
     voice: Option<String>,
-    /// One of the configured `LEXI_MODELS`; absent = the default model.
+    /// One of the configured `LEXI_MODELS`; absent = the default model. Not accepted with `provider: google`
+    /// (the Gemini model is fixed by `LEXI_GEMINI_MODEL`).
     model: Option<String>,
+    /// `openai` (default) or `google`. The voice is validated against that provider's list.
+    provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -70,6 +77,7 @@ struct TokenResponse {
     token: String,
     expires_at: i64,
     model: String,
+    provider: &'static str,
 }
 
 #[derive(Serialize)]
@@ -168,9 +176,6 @@ async fn call_token_inner(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Response {
-    if !state.openai.has_key() {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
-    }
     let request: TokenRequest = if body.is_empty() {
         TokenRequest::default()
     } else {
@@ -179,13 +184,35 @@ async fn call_token_inner(
             Err(_) => return err(StatusCode::BAD_REQUEST, "invalid body"),
         }
     };
+    let google = match request.provider.as_deref() {
+        None | Some("openai") => false,
+        Some("google") => true,
+        Some(_) => return err(StatusCode::BAD_REQUEST, "unknown provider"),
+    };
+    let ready = if google {
+        state.gemini.has_key()
+    } else {
+        state.openai.has_key()
+    };
+    if !ready {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
+    }
     if let Some(v) = &request.voice {
-        if !state.cfg.voices.iter().any(|allowed| allowed == v) {
+        let known = if google {
+            state
+                .cfg
+                .gemini_voices
+                .iter()
+                .any(|(allowed, _)| allowed == v)
+        } else {
+            state.cfg.voices.iter().any(|allowed| allowed == v)
+        };
+        if !known {
             return err(StatusCode::BAD_REQUEST, "unknown voice");
         }
     }
     if let Some(m) = &request.model {
-        if !state.cfg.models.iter().any(|allowed| allowed == m) {
+        if google || !state.cfg.models.iter().any(|allowed| allowed == m) {
             return err(StatusCode::BAD_REQUEST, "unknown model");
         }
     }
@@ -194,21 +221,38 @@ async fn call_token_inner(
         Err(r) => return *r,
     };
 
-    match state
-        .openai
-        .mint(&install, request.voice.as_deref(), request.model.as_deref())
-        .await
-    {
-        Ok(secret) => Json(TokenResponse {
+    let minted = if google {
+        let voice = request.voice.as_deref().unwrap_or(&state.cfg.gemini_voice);
+        state
+            .gemini
+            .mint(voice)
+            .await
+            .map(|s| (s, state.gemini.model().to_owned(), "google"))
+    } else {
+        state
+            .openai
+            .mint(&install, request.voice.as_deref(), request.model.as_deref())
+            .await
+            .map(|s| {
+                let model = request
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| state.cfg.model.clone());
+                (s, model, "openai")
+            })
+    };
+    match minted {
+        Ok((secret, model, provider)) => Json(TokenResponse {
             token: secret.value.expose().to_owned(),
             expires_at: secret.expires_at,
-            model: request.model.unwrap_or_else(|| state.cfg.model.clone()),
+            model,
+            provider,
         })
         .into_response(),
         Err(e) => {
             metrics::counter!("lexi_upstream_errors_total").increment(1);
             // Status code only; never the body (it could echo secrets).
-            tracing::error!(error = %e, "upstream mint failed");
+            tracing::error!(error = %e, provider = if google { "google" } else { "openai" }, "upstream mint failed");
             err(StatusCode::BAD_GATEWAY, "upstream error")
         }
     }
@@ -252,6 +296,8 @@ async fn search_inner(
     if !state.cfg.web_search {
         return err(StatusCode::NOT_FOUND, "web search is off");
     }
+    // OpenAI's own search (the Responses `web_search` tool): the OpenAI bot's tool. Gemini searches inside
+    // its Live session and never comes here.
     if !state.openai.has_key() {
         return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
     }

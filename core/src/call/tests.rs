@@ -506,7 +506,7 @@ fn tool_call_done(name: &str, args: &str) -> SessionEvent {
 }
 
 fn sent_after_greeting(c: &MockConnector, n: usize) -> Vec<serde_json::Value> {
-    wait_until("tool reply sent", || c.sent.lock().unwrap().len() >= 1 + n);
+    wait_until("tool reply sent", || c.sent.lock().unwrap().len() > n);
     c.sent.lock().unwrap()[1..]
         .iter()
         .map(|j| serde_json::from_str(j).unwrap())
@@ -558,6 +558,21 @@ fn failed_missing_or_unknown_tool_calls_still_get_an_answer_and_cost_nothing() {
         "{outputs:?}"
     );
     assert!(rig.costs.lock().unwrap().is_empty());
+    rig.handle.hangup();
+    rig.wait_state(CallState::Ended);
+}
+
+#[test]
+fn builtin_google_searches_are_billed_per_query_on_top_of_the_tokens() {
+    let mut c = MockConnector::new(vec![]);
+    if let Some(m) = Arc::get_mut(&mut c) {
+        m.model = "gemini-3.8-live".into();
+    }
+    let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
+    rig.wait_state(CallState::Live);
+    c.inject(SessionEvent::Server(ServerEvent::WebSearches { count: 2 }));
+    wait_until("search cost", || !rig.costs.lock().unwrap().is_empty());
+    assert_eq!(rig.costs.lock().unwrap()[0], 28_000, "2 queries x $0.014");
     rig.handle.hangup();
     rig.wait_state(CallState::Ended);
 }

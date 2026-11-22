@@ -1,11 +1,11 @@
-# lexi-minter
+# lexi
 
 Holds the OpenAI API key and issues **one ephemeral client secret per call** (SPEC §5).
 
 ## Run locally
 
 ```sh
-OPENAI_API_KEY=sk-... cargo run -p lexi-minter
+OPENAI_API_KEY=sk-... cargo run -p lexi
 curl -XPOST localhost:8080/v1/call-token -H "X-Lexi-Install: $(printf 'a%.0s' $(seq 64))" -d '{}'
 ```
 
@@ -54,6 +54,6 @@ API, which we do not use — it is unclear whether it applies to Realtime sessio
 
 ## Tests
 
-`cargo test -p lexi-minter` — wiremock covers success, upstream 4xx/5xx/timeout/bad body, rate limits,
+`cargo test -p lexi` — wiremock covers success, upstream 4xx/5xx/timeout/bad body, rate limits,
 attestation and readiness. `tests/logs.rs` (separate binary on purpose) asserts that the API key, the
 ephemeral token, the install hash and the attestation material never appear in logs.

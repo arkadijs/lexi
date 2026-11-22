@@ -1,8 +1,8 @@
-# Deploying lexi-minter
+# Deploying lexi
 
 Kustomize layout: `base/` (Deployment, Service, Ingress, HPA, PDB, NetworkPolicy, ConfigMaps),
 `overlays/dev` (kind: 1 replica, no ingress/HPA/PDB, attestation off), `overlays/prod` (shared-key
-attestation, trusts the ingress' `X-Forwarded-For`), `overlays/cluster` (prod + host `lexi-minter.example.com`,
+attestation, trusts the ingress' `X-Forwarded-For`), `overlays/cluster` (prod + host `lexi.example.com`,
 locally built image), `components/servicemonitor` (optional, needs the Prometheus Operator).
 
 ## Secrets (never committed; referenced by the manifests)
@@ -30,7 +30,7 @@ Calling the shared-key endpoint (key from the `lexi-attest-key` Secret):
 
 ```sh
 TS=$(date +%s); SIG=$(printf %s "$TS" | openssl dgst -sha256 -hmac "$KEY" -hex | awk '{print $NF}')
-curl -XPOST https://lexi-minter.example.com/v1/call-token -H "X-Lexi-Install: <64 hex>" -H "X-Lexi-Attest: $TS.$SIG" -d '{}'
+curl -XPOST https://lexi.example.com/v1/call-token -H "X-Lexi-Install: <64 hex>" -H "X-Lexi-Attest: $TS.$SIG" -d '{}'
 ```
 
 Known gap: the cluster has no metrics-server, so the HPA reports `<unknown>` and will not scale

@@ -76,7 +76,9 @@ class CallService : Service() {
         NativeBridge.setMuted(CallModel.muted) // honour "muted before the call"
         NativeBridge.startCall(
             BuildConfig.MINTER_URL, InstallId.hash(this), BuildConfig.ATTEST_KEY, Voices.current(this).id,
-            Models.current(this).id
+            // The model choice only exists for OpenAI; Gemini's single Live model is fixed by the server.
+            if (Providers.current(this).id == "openai") Models.current(this).id else "",
+            Providers.current(this).id
         )
     }
 

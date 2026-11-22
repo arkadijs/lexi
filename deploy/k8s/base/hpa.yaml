@@ -1,9 +1,9 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: lexi-minter
+  name: lexi
 spec:
-  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: lexi-minter }
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: lexi }
   minReplicas: 2
   maxReplicas: 6
   metrics:

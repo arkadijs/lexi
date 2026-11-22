@@ -12,7 +12,7 @@ object Models {
 
     val all = listOf(
         Model("gpt-realtime-2.1-mini", "Mini"),
-        Model("gpt-realtime-2.1", "Full"),
+        Model("gpt-realtime-2.1", "Smart"),
     )
 
     fun current(context: Context): Model {

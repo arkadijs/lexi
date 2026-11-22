@@ -47,6 +47,11 @@ impl PcmProducer {
         }
     }
 
+    /// Samples currently buffered in the ring (written, not yet pulled).
+    pub fn buffered(&self) -> usize {
+        self.p.buffer().capacity() - self.p.slots()
+    }
+
     /// Ask the consumer to discard everything buffered so far (barge-in).
     pub fn flush(&self) {
         self.gen.fetch_add(1, Ordering::Release);

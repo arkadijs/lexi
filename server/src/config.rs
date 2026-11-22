@@ -41,9 +41,24 @@ pub struct Config {
     pub models: Vec<String>,
     /// Default voice, used when the app does not ask for one.
     pub voice: String,
+    /// Google Gemini Live (second provider): key, model, base URL (tests), voices with genders, default voice,
+    /// optional thinking level (`minimal`..`high`) and nothing else locked in unless set.
+    pub gemini_api_key: Option<Secret>,
+    pub gemini_base_url: String,
+    pub gemini_model: String,
+    pub gemini_voices: Vec<(String, Gender)>,
+    pub gemini_voice: String,
+    pub gemini_thinking: Option<String>,
+    /// Gemini Live searches with Google's own `googleSearch` tool inside the session (`builtin`, default) or
+    /// not at all (`off`). Providers are compartmentalized: OpenAI searches through OpenAI (`/v1/search`), Gemini
+    /// through Google, and neither depends on the other's key.
+    pub gemini_search: GeminiSearch,
     /// Voices the app may request (`voice` in the request body); anything else is a 400.
     pub voices: Vec<String>,
     pub instructions: String,
+    /// Gender of each voice (`male`/`female`), so the bot uses the right grammatical gender about itself in
+    /// languages that mark it (LEXI_VOICE_GENDERS, `voice=gender` pairs). Voices not listed get no gender line.
+    pub voice_genders: Vec<(String, Gender)>,
     /// `session.reasoning.effort`; `None` leaves the API default (`low`).
     pub reasoning_effort: Option<String>,
     /// server_vad `silence_duration_ms` (API default 500); `None` leaves the default.
@@ -80,6 +95,43 @@ pub const DEFAULT_VOICES: &str = "alloy,ash,ballad,coral,echo,sage,shimmer,verse
 pub const DEFAULT_MODELS: &str = "gpt-realtime-2.1-mini,gpt-realtime-2.1";
 
 const EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeminiSearch {
+    Builtin,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gender {
+    Male,
+    Female,
+}
+
+impl Gender {
+    /// Appended to the instructions. Matters in Russian and other gendered languages ("рад" vs "рада").
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Gender::Male => "# Your gender\nYou are a man and your voice is male. In every language that marks grammatical gender (Russian, Ukrainian, Polish, German, French, Spanish and others) always speak about yourself in the masculine: in Russian \"рад\", \"я сказал\", \"готов\", never \"рада\", \"сказала\", \"готова\".",
+            Gender::Female => "# Your gender\nYou are a woman and your voice is female. In every language that marks grammatical gender (Russian, Ukrainian, Polish, German, French, Spanish and others) always speak about yourself in the feminine: in Russian \"рада\", \"я сказала\", \"готова\", never \"рад\", \"сказал\", \"готов\".",
+        }
+    }
+}
+
+/// Default voice genders (the app offers Cedar, Marin and Alloy).
+pub const DEFAULT_VOICE_GENDERS: &str = "cedar=male,marin=female,alloy=female";
+
+/// Gemini voices offered by default with their genders (Google's voice list does not state them; these are
+/// the commonly cited ones and are reviewed by ear). Names are lower-case here, capitalized for the API.
+pub const DEFAULT_GEMINI_VOICES: &str = "charon=male,fenrir=male,kore=female,leda=female";
+
+fn parse_voice_gender(p: &str) -> Result<(String, Gender), String> {
+    match p.trim().split_once('=') {
+        Some((v, "male")) => Ok((v.trim().to_owned(), Gender::Male)),
+        Some((v, "female")) => Ok((v.trim().to_owned(), Gender::Female)),
+        _ => Err(format!("bad voice entry {p:?} (want voice=male|female)")),
+    }
+}
 
 /// OpenAI documents a 10 s minimum and 7200 s maximum for `expires_after.seconds`.
 const TTL_RANGE: std::ops::RangeInclusive<u32> = 10..=7200;
@@ -131,6 +183,29 @@ impl Config {
             None => DEFAULT_INSTRUCTIONS.to_owned(),
         };
 
+        let voice_genders = get("LEXI_VOICE_GENDERS")
+            .unwrap_or_else(|| DEFAULT_VOICE_GENDERS.to_owned())
+            .split(',')
+            .filter(|p| !p.trim().is_empty())
+            .map(parse_voice_gender)
+            .collect::<Result<Vec<_>, _>>()?;
+        let gemini_voices = get("LEXI_GEMINI_VOICES")
+            .unwrap_or_else(|| DEFAULT_GEMINI_VOICES.to_owned())
+            .split(',')
+            .filter(|p| !p.trim().is_empty())
+            .map(parse_voice_gender)
+            .collect::<Result<Vec<_>, _>>()?;
+        let gemini_voice = get("LEXI_GEMINI_VOICE").unwrap_or_else(|| "charon".into());
+        if !gemini_voices.iter().any(|(v, _)| *v == gemini_voice) {
+            return Err(format!(
+                "LEXI_GEMINI_VOICE {gemini_voice:?} is not in LEXI_GEMINI_VOICES"
+            ));
+        }
+        let gemini_search = match get("LEXI_GEMINI_SEARCH").as_deref().map(str::trim) {
+            None | Some("" | "builtin") => GeminiSearch::Builtin,
+            Some("off") => GeminiSearch::Off,
+            Some(o) => return Err(format!("LEXI_GEMINI_SEARCH: unknown mode {o:?}")),
+        };
         let token_ttl_secs: u32 = parse(&get, "LEXI_TOKEN_TTL_SECS", 60)?;
         if !TTL_RANGE.contains(&token_ttl_secs) {
             return Err(format!("LEXI_TOKEN_TTL_SECS must be within {TTL_RANGE:?}"));
@@ -190,8 +265,21 @@ impl Config {
             model,
             models,
             voice,
+            gemini_api_key: get("GEMINI_API_KEY")
+                .filter(|s| !s.is_empty())
+                .map(Secret::new),
+            gemini_base_url: get("LEXI_GEMINI_BASE_URL")
+                .unwrap_or_else(|| "https://generativelanguage.googleapis.com".into())
+                .trim_end_matches('/')
+                .to_owned(),
+            gemini_model: get("LEXI_GEMINI_MODEL").unwrap_or_else(|| "gemini-3.8-live".into()),
+            gemini_voices,
+            gemini_voice,
+            gemini_search,
+            gemini_thinking: get("LEXI_GEMINI_THINKING").filter(|s| !s.trim().is_empty()),
             voices,
             instructions,
+            voice_genders,
             reasoning_effort,
             vad_silence_ms: (vad_silence_ms != 0).then_some(vad_silence_ms),
             web_search: parse(&get, "LEXI_WEB_SEARCH", true)?,
@@ -239,7 +327,7 @@ mod tests {
         let deployed = std::fs::read_to_string(&file).unwrap();
         assert_eq!(
             DEFAULT_INSTRUCTIONS, deployed,
-            "keep minter/src/instructions.default.txt and {file:?} identical"
+            "keep server/src/instructions.default.txt and {file:?} identical"
         );
     }
 

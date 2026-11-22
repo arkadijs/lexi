@@ -10,8 +10,9 @@
 mod audio;
 
 use lexi_core::codec::{FRAME_SAMPLES, SAMPLE_RATE};
+use lexi_core::gemini::{self, GeminiSession};
 use lexi_core::openai::{self, ServerEvent};
-use lexi_core::rtc::{Handler, RtcConfig, RtcSession, RtcState};
+use lexi_core::rtc::{self, Handler, RtcConfig, RtcSession, RtcState};
 use std::collections::hash_map::RandomState;
 use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,7 +21,7 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone] [--prompt TEXT]
             [--exit-after-response] [--duration SECS] [--out-wav FILE] [--install-hash HEX64]
-  --minter URL            fetch an ephemeral token from lexi-minter (set LEXI_ATTEST_KEY in the
+  --minter URL            fetch an ephemeral token from lexi (set LEXI_ATTEST_KEY in the
                           environment if it runs in shared-key attestation mode)
   --dev-key               mint directly with OPENAI_API_KEY from the environment (development only)
   --headless              no mic/speaker; sends silence (or --tone) and discards/records playout
@@ -34,6 +35,7 @@ const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone
   --mic-delay SECS        with --mic-wav: start feeding it after SECS (e.g. to interrupt the bot)
   --trace                 print mic/bot levels every 100 ms
   --voice V               output voice (default: cedar with --dev-key, the minter's default with --minter)
+  --provider P            with --minter: openai (default) or google (Gemini Live, WebSocket)
   --model M               realtime model (gpt-realtime-2.1-mini | gpt-realtime-2.1; default: mini / the minter's default)
   --instructions TEXT     with --dev-key: system instructions
   --vad-silence-ms N      with --dev-key: server_vad silence_duration_ms (API default 500)
@@ -61,6 +63,7 @@ struct Args {
     // --dev-key session tuning (measurement)
     voice: Option<String>,
     model: Option<String>,
+    provider: Option<String>,
     instructions: Option<String>,
     silence_ms: Option<u32>,
     eagerness: Option<String>,
@@ -92,6 +95,7 @@ fn parse_args() -> Result<Args, String> {
             "--greet" => a.greet = true,
             "--voice" => a.voice = Some(val("--voice")?),
             "--model" => a.model = Some(val("--model")?),
+            "--provider" => a.provider = Some(val("--provider")?),
             "--instructions" => a.instructions = Some(val("--instructions")?),
             "--vad-silence-ms" => {
                 a.silence_ms = Some(
@@ -125,6 +129,33 @@ fn random_install_hash() -> String {
             format!("{:016x}", h.finish())
         })
         .collect()
+}
+
+/// Either transport behind the same few calls.
+enum Live {
+    Rtc(RtcSession),
+    Gemini(GeminiSession),
+}
+
+impl Live {
+    fn send_event(&self, json: String) {
+        match self {
+            Live::Rtc(s) => s.send_event(json),
+            Live::Gemini(s) => s.send_event(json),
+        }
+    }
+    fn levels(&self) -> &rtc::Levels {
+        match self {
+            Live::Rtc(s) => &s.levels,
+            Live::Gemini(s) => &s.levels,
+        }
+    }
+    fn close(self) {
+        match self {
+            Live::Rtc(s) => s.close(),
+            Live::Gemini(s) => s.close(),
+        }
+    }
 }
 
 struct Printer {
@@ -197,6 +228,9 @@ impl Handler for Printer {
                     error.code.as_deref().unwrap_or("-"),
                     error.message.as_deref().unwrap_or("-")
                 );
+            }
+            ServerEvent::WebSearches { count } => {
+                println!("[{t:>6.2}s] built-in web search ({count} queries)")
             }
             ServerEvent::Other => {}
         }
@@ -327,6 +361,7 @@ fn run() -> Result<(), String> {
             attest.as_deref(),
             args.voice.as_deref(),
             args.model.as_deref(),
+            args.provider.as_deref(),
         )
         .map_err(|e| format!("minter: {e}"))?
     } else {
@@ -374,8 +409,15 @@ fn run() -> Result<(), String> {
         mic_began: Arc::clone(&mic_began),
         tool_calls: tool_tx,
     };
-    let (session, mic, pcm) = RtcSession::start(RtcConfig::default(), &minted.token, handler)
-        .map_err(|e| e.to_string())?;
+    let (session, mic, pcm) = if minted.provider == "google" {
+        let (s, m, p) = GeminiSession::start(&gemini::Endpoint::google(), &minted.token, handler)
+            .map_err(|e| e.to_string())?;
+        (Live::Gemini(s), m, p)
+    } else {
+        let (s, m, p) = RtcSession::start(RtcConfig::default(), &minted.token, handler)
+            .map_err(|e| e.to_string())?;
+        (Live::Rtc(s), m, p)
+    };
 
     if args.greet {
         session.send_event(r#"{"type":"response.create"}"#.into());
@@ -450,7 +492,7 @@ fn run() -> Result<(), String> {
             // wait until playout has been quiet for 600 ms (cap 20 s after done).
             let done_at = *done_at.get_or_insert_with(Instant::now);
             // (the server keeps streaming near-silent packets, so ring occupancy says nothing)
-            if session.levels.bot() > 0.005 {
+            if session.levels().bot() > 0.005 {
                 quiet_since = None;
             } else {
                 let q = *quiet_since.get_or_insert_with(Instant::now);
@@ -503,7 +545,7 @@ fn run() -> Result<(), String> {
                 frames += 1;
             }
         }
-        if !first_audio_reported && session.levels.bot() > 0.02 {
+        if !first_audio_reported && session.levels().bot() > 0.02 {
             if let Some(t) = last_voiced.filter(|t| t.elapsed() > Duration::from_millis(300)) {
                 first_audio_reported = true;
                 println!(
@@ -517,13 +559,13 @@ fn run() -> Result<(), String> {
             println!(
                 "  t={:>5.2}s mic={:.3} bot={:.3}",
                 start.elapsed().as_secs_f32(),
-                session.levels.mic(),
-                session.levels.bot()
+                session.levels().mic(),
+                session.levels().bot()
             );
         }
         if !args.trace && last_levels.elapsed() >= Duration::from_millis(500) {
             last_levels = Instant::now();
-            let (m, b) = (session.levels.mic(), session.levels.bot());
+            let (m, b) = (session.levels().mic(), session.levels().bot());
             if m > 0.01 || b > 0.01 {
                 println!("  levels mic={m:.2} bot={b:.2}");
             }

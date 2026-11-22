@@ -39,6 +39,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var surface: SurfaceView
     private lateinit var status: TextView
     private lateinit var topBar: LinearLayout
+    private lateinit var providerPill: TextView
     private lateinit var voicePill: TextView
     private lateinit var modelPill: TextView
     private lateinit var costView: TextView
@@ -79,14 +80,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             isClickable = true; isFocusable = true
             setOnClickListener { onClick() }
         }
+        providerPill = pill { showProviderMenu() }
         voicePill = pill { showVoiceMenu() }
         modelPill = pill { showModelMenu() }
-        // The two selectors side by side, the same width and the same gap either side of the centre.
+        // The three selectors side by side (provider, voice, model): the same width, the same gaps.
         val pills = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
-            val lp = { LinearLayout.LayoutParams(dp(132), ViewGroup.LayoutParams.WRAP_CONTENT) }
-            addView(voicePill, lp().apply { marginEnd = dp(6) })
-            addView(modelPill, lp().apply { marginStart = dp(6) })
+            val lp = { LinearLayout.LayoutParams(dp(104), ViewGroup.LayoutParams.WRAP_CONTENT) }
+            addView(providerPill, lp().apply { marginEnd = dp(4) })
+            addView(voicePill, lp().apply { marginStart = dp(4); marginEnd = dp(4) })
+            addView(modelPill, lp().apply { marginStart = dp(4) })
         }
         status = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 16f; gravity = Gravity.CENTER
@@ -194,8 +197,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) = NativeBridge.surfaceChanged(w, h)
     override fun surfaceDestroyed(holder: SurfaceHolder) = NativeBridge.surfaceDestroyed()
 
-    private fun showVoiceMenu() = showMenu(voicePill, Voices.all.map { it.label }, Voices.current(this).label) { label ->
-        Voices.all.firstOrNull { it.label == label }?.let { Voices.set(this, it) }
+    private fun showProviderMenu() = showMenu(providerPill, Providers.all.map { it.label }, Providers.current(this).label) { label ->
+        Providers.all.firstOrNull { it.label == label }?.let { Providers.set(this, it) }
+    }
+
+    private fun showVoiceMenu() {
+        val voices = Voices.all(Providers.current(this))
+        showMenu(voicePill, voices.map { it.label }, Voices.current(this).label) { label ->
+            voices.firstOrNull { it.label == label }?.let { Voices.set(this, it) }
+        }
     }
 
     private fun showModelMenu() = showMenu(modelPill, Models.all.map { it.label }, Models.current(this).label) { label ->
@@ -303,11 +313,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val voice = Voices.current(this)
         voicePill.text = "${voice.label}  ▾"
         voicePill.contentDescription = getString(R.string.cd_voice, voice.label)
+        val provider = Providers.current(this)
+        providerPill.text = "${provider.label}  ▾"
+        providerPill.contentDescription = getString(R.string.cd_provider, provider.label)
         val model = Models.current(this)
-        modelPill.text = "${model.label}  ▾"
-        modelPill.contentDescription = getString(R.string.cd_model, model.label)
-        // Both choices are per call: locked (dimmed, not clickable) while a call runs.
-        for (p in listOf(voicePill, modelPill)) { p.isEnabled = !active; p.alpha = if (active) 0.4f else 1f }
+        val google = provider.id == "google"
+        // Gemini has one Live model: the model pill shows it and cannot be changed.
+        modelPill.text = if (google) "Live" else "${model.label}  ▾"
+        modelPill.contentDescription = if (google) getString(R.string.cd_model_fixed) else getString(R.string.cd_model, model.label)
+        // The choices are per call: locked (dimmed, not clickable) while a call runs.
+        for (p in listOf(providerPill, voicePill, modelPill)) { p.isEnabled = !active; p.alpha = if (active) 0.4f else 1f }
+        if (google && !active) { modelPill.isEnabled = false; modelPill.alpha = 0.4f }
 
         val cost = CallModel.costMicro
         costView.visibility = if (cost == null) View.INVISIBLE else View.VISIBLE

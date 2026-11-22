@@ -19,18 +19,18 @@ before any Android work. Phases 2 and 3 can run in parallel with Phase 4.
 
 **Done when:** `cargo build --workspace` and `cargo test --workspace` pass; CI is green.
 
-## Phase 1 — Minting service (`minter/`)
+## Phase 1 — Minting service (`server/`)
 - [x] axum app with routes per SPEC §5.2, config from env, structured JSON logs, request IDs, timeouts.
-- [x] OpenAI client for `/v1/realtime/client_secrets` (reqwest + rustls). **First verify the request/response shape against the current OpenAI API reference** and record it in `minter/README.md`.
+- [x] OpenAI client for `/v1/realtime/client_secrets` (reqwest + rustls). **First verify the request/response shape against the current OpenAI API reference** and record it in `server/README.md`.
 - [x] Rate limiting (per install hash and per IP) with `governor`; 429 with `Retry-After`.
 - [x] Attestation trait with `off` and `shared-key` implementations; `play-integrity` stubbed behind a feature.
 - [x] `/healthz`, `/readyz`, `/metrics` (port 9090): request count, latency histogram, upstream errors, rate-limit hits.
 - [x] Tests with `wiremock` for success, upstream 4xx/5xx, timeout, rate limit, bad attestation. Assert that tokens and keys never appear in logs.
 - [x] Graceful shutdown.
 
-**Done when:** tests pass; `OPENAI_API_KEY=... cargo run -p lexi-minter` and `curl -XPOST localhost:8080/v1/call-token` return a real `ek_` token.
+**Done when:** tests pass; `OPENAI_API_KEY=... cargo run -p lexi` and `curl -XPOST localhost:8080/v1/call-token` return a real `ek_` token.
 
-## Phase 2 — Container + Kubernetes (`minter/Dockerfile`, `deploy/k8s/`)
+## Phase 2 — Container + Kubernetes (`server/Dockerfile`, `deploy/k8s/`)
 - [x] Multi-stage Dockerfile: build static musl binary (cargo-chef for caching) → `distroless/static:nonroot`. Multi-arch (amd64, arm64) via buildx. (built and run on remote for amd64; the arm64/buildx multi-arch build is in CI only, not yet run)
 - [x] Kustomize base + `dev`/`prod` overlays per SPEC §5.5. The Secret is referenced, not committed; document `kubectl create secret generic openai-api-key --from-literal=OPENAI_API_KEY=...`. (plus an `remote` overlay for the real cluster; see deploy/k8s/README.md)
 - [x] `scripts/kind-up.sh`: create a kind cluster, load the image, apply the dev overlay, port-forward. (written, **not run**: no docker/kind available here; the dev overlay was only server-side dry-run on remote)
@@ -77,7 +77,7 @@ N4's 5 % budget (see android/README.md).
 ## Phase 5c — Voice, language and latency (done 2026-11-22 except the open items)
 - [x] Reply latency: found and fixed the cause of the long pause (DTX silence frames were not sent, so the server's VAD
   could not see the end of the user's turn): ~5.6 s → ~1.5 s; then `silence_duration_ms` 400 and `reasoning.effort` low
-  (measured in SPEC §2.1; both are minter/ConfigMap settings, `minimal` effort is a documented option). The desktop harness has `--vad-silence-ms`, `--semantic-eagerness`, `--effort`, `--voice`,
+  (measured in SPEC §2.1; both are server/ConfigMap settings, `minimal` effort is a documented option). The desktop harness has `--vad-silence-ms`, `--semantic-eagerness`, `--effort`, `--voice`,
   `--instructions` for dev-key measurements and prints `LATENCY end of user speech -> first bot audio`.
 - [x] Minter prompt cleared and replaced: greet in Russian, expect Russian, follow a language switch; the core sends
   `response.create` once per call when the channel opens (SPEC §2.1).
@@ -112,11 +112,27 @@ Show what the current call has cost so far (SPEC §2.6). The price table of `gpt
 **Done when:** acceptance criterion 6 passes; no GL errors in logcat; rendering stops when locked (verify via logcat/systrace).
 
 ## Phase 6b — Model choice, Marin, web search, name (2026-11-22)
-- [x] Marin voice in the pill between Cedar and Alloy; second pill Mini/Full; both disabled during a call; symmetric.
+- [x] Marin voice in the pill between Cedar and Alloy; second pill Mini/Smart; both disabled during a call; symmetric.
 - [x] Minter: `model` in the token request (allowlist `LEXI_MODELS`), full-model prices in the core, cost rounded up to the cent.
 - [x] Prompt checked against the full model (equally short replies; stop answered in under 2 s).
 - [x] Web search: `web_search` function tool, minter `POST /v1/search` (Responses API), tool-call loop in the core, search cost in the total, verified end to end with the desk harness on both models (3 s search, 5-9 s spoken answer). The bot is named Lexi.
 - [ ] Not verified: a spoken web-search conversation on the phone (adb cannot speak), the search cost estimate against the OpenAI dashboard.
+
+## Phase 6c — Service renamed to `lexi`; gender and greeting rules (2026-11-22)
+- [x] `lexi-minter` → `lexi` (crate, `server/`, k8s, host `lexi.example.com`); old cluster resources deleted; app rebuilt for the new host.
+- [x] Per-voice gender line appended by the server (`LEXI_VOICE_GENDERS`, Cedar male, Marin/Alloy female): "рад" vs "рада" verified on both models; "greet exactly once" added to the prompt.
+- [x] Model label Full → Smart.
+
+## Phase 6d — Google Gemini Live as a second provider (2026-11-22)
+Verified with the user's keys: `models/gemini-3.8-live`; `POST /v1beta/auth_tokens` accepts `bidiGenerateContentSetup` (locks model, voice, instructions, tools; the documented `liveConnectConstraints` is rejected); Live is WebSocket only; function calling works; usage is per generation.
+- [x] Server: `provider` in the token request, `GEMINI_API_KEY` (Secret `gemini-api-key`, optional in the deployment, created by `scripts/deploy.sh` when the variable is set), locked setup with prompt + gender line + `web_search` function, `LEXI_GEMINI_*` settings, tests with a mock Google.
+- [x] Search: Gemini uses Google's built-in `googleSearch` inside the Live session (queries billed per query); OpenAI keeps its own search through the server (providers compartmentalized, decided with the user). Measured on the same question: built-in 1.6 s to the spoken answer; function route through OpenAI 8.3 s search + 15.8 s total.
+- [x] Core: `core/src/gemini` WebSocket session (tungstenite + rustls/ring + webpki-roots, no new crypto stack), 48↔16/24 kHz resampling, paced playout, barge-in, usage → cost, per-query search cost, prices in `pricing`; 8 tests including a full scripted conversation.
+- [x] App: provider pill left of the voice pill (OpenAI | Google), voice list per provider, model pill fixed to "Live" for Google, all locked during a call.
+- [x] Verified live: desk harness and the phone (live in 1.4 s, greeting, cost); Charon says "рад", Kore "рада"; web search answered by voice (search 3.4 s).
+- [x] Voice samples: `Download/lexi-voices/gemini-<voice>-ru|en.wav` on the phone (Google's TTS model as a proxy; rate-limited, partial).
+- [ ] The offered Gemini voices (Charon, Fenrir, Kore, Leda) are a placeholder until the user has listened to the samples.
+- [ ] Not done: session resumption (Live audio sessions end after ~15 minutes), `thinkingLevel` (untested), Gemini price check against a real bill, barge-in with real audio, Gemini on a prepaid-credits key (the second key has no credits; the first key works for Live).
 
 ## Phase 7 — Hardening, size, release
 - [ ] Measure and report sizes (`.so` and the release APK); remove unused deps and features until N1 is met.
@@ -145,6 +161,6 @@ mode exists in the shader but has no UI toggle.
 | str0m ↔ OpenAI interop (DTLS, SDP quirks) | Proven in Phase 3 on desktop first; crypto backend fallback; LiveKit `libwebrtc` bindings as a last resort (accepting +5–8 MB). |
 | Echo on speakerphone with weak hardware AEC | VoiceCommunication preset; test on the device matrix; option to add WebRTC AEC3 (via the `webrtc-audio-processing` crate) behind a feature flag. |
 | Prices change; the built-in table goes stale | `VERIFIED_ON` date next to the table; re-check on the pricing page whenever the model or `LEXI_MODEL` changes; the cost line is an estimate and is hidden for unknown models. Optional later: have the minter send the price table so a price change needs no app rebuild. |
-| OpenAI API shape changes | All endpoints/fields are isolated in `core/openai` and `minter/src/openai.rs`; verify against the docs in Phases 1 and 3. |
+| OpenAI API shape changes | All endpoints/fields are isolated in `core/openai` and `server/src/openai.rs`; verify against the docs in Phases 1 and 3. |
 | OEM background killing | Foreground service + wake locks + battery-optimisation prompt; test on Xiaomi/Samsung. |
 | Token abuse / cost blow-up | Attestation, per-install and per-IP rate limits, short TTL, max session length, spend alerts on the OpenAI project. |

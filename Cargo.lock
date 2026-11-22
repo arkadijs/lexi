@@ -1569,29 +1569,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "lexi-core"
-version = "0.1.0"
-dependencies = [
- "android_logger",
- "glow",
- "hmac",
- "if-addrs",
- "jni",
- "khronos-egl",
- "log",
- "ndk",
- "ndk-sys",
- "opus",
- "rtrb",
- "serde",
- "serde_json",
- "sha2",
- "str0m",
- "ureq",
-]
-
-[[package]]
-name = "lexi-minter"
+name = "lexi"
 version = "0.1.0"
 dependencies = [
  "axum",
@@ -1610,6 +1588,32 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wiremock",
+]
+
+[[package]]
+name = "lexi-core"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "base64 0.23.1",
+ "glow",
+ "hmac",
+ "if-addrs",
+ "jni",
+ "khronos-egl",
+ "log",
+ "ndk",
+ "ndk-sys",
+ "opus",
+ "rtrb",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "str0m",
+ "tungstenite",
+ "ureq",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -3340,6 +3344,22 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.10.4",
+ "sha1",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "typenum"

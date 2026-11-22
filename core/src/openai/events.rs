@@ -21,6 +21,9 @@ pub enum ServerEvent {
     ResponseDone { response: ResponseSummary },
     #[serde(rename = "error")]
     Error { error: ApiError },
+    /// Built by the Gemini session (never on the wire): Google's built-in search ran `count` queries.
+    #[serde(skip)]
+    WebSearches { count: u32 },
     /// Any event type we do not handle.
     #[serde(other)]
     Other,

@@ -1,6 +1,6 @@
 //! Upstream client for `POST /v1/realtime/client_secrets`.
 //!
-//! Request/response shape verified against the OpenAI API reference; see `minter/README.md`.
+//! Request/response shape verified against the OpenAI API reference; see `server/README.md`.
 
 use crate::config::{Config, Secret};
 use serde::Deserialize;
@@ -55,6 +55,7 @@ pub struct OpenAiClient {
     api_key: Option<Secret>,
     model: String,
     instructions: String,
+    voice_genders: Vec<(String, crate::config::Gender)>,
     default_voice: String,
     ttl_secs: u32,
     reasoning_effort: Option<String>,
@@ -142,6 +143,7 @@ impl OpenAiClient {
             api_key: cfg.api_key.clone(),
             model: cfg.model.clone(),
             instructions: cfg.instructions.clone(),
+            voice_genders: cfg.voice_genders.clone(),
             default_voice: cfg.voice.clone(),
             ttl_secs: cfg.token_ttl_secs,
             reasoning_effort: cfg.reasoning_effort.clone(),
@@ -153,6 +155,14 @@ impl OpenAiClient {
         })
     }
 
+    /// The configured instructions plus the gender line for this voice.
+    fn instructions_for(&self, voice: &str) -> String {
+        match self.voice_genders.iter().find(|(v, _)| v == voice) {
+            Some((_, g)) => format!("{}\n\n{}", self.instructions.trim_end(), g.instruction()),
+            None => self.instructions.clone(),
+        }
+    }
+
     /// Request body for `POST /v1/realtime/client_secrets` (shape verified against the API reference).
     fn body(&self, model: &str, voice: &str) -> serde_json::Value {
         let mut turn_detection = json!({ "type": "server_vad", "interrupt_response": true });
@@ -162,7 +172,7 @@ impl OpenAiClient {
         let mut session = json!({
             "type": "realtime",
             "model": model,
-            "instructions": self.instructions,
+            "instructions": self.instructions_for(voice),
             "audio": {
                 "output": { "voice": voice },
                 "input": { "turn_detection": turn_detection }

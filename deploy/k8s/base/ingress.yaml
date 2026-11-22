@@ -2,20 +2,20 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: lexi-minter
+  name: lexi
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
 spec:
   rules:
-    - host: lexi-minter.example.com   # overridden per overlay
+    - host: lexi.example.com   # overridden per overlay
       http:
         paths:
           - path: /v1/call-token
             pathType: Exact
-            backend: { service: { name: lexi-minter, port: { name: http } } }
+            backend: { service: { name: lexi, port: { name: http } } }
           - path: /v1/search
             pathType: Exact
-            backend: { service: { name: lexi-minter, port: { name: http } } }
+            backend: { service: { name: lexi, port: { name: http } } }
   tls:
-    - hosts: [lexi-minter.example.com]
-      secretName: lexi-minter-cert
+    - hosts: [lexi.example.com]
+      secretName: lexi-cert

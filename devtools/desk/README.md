@@ -5,7 +5,7 @@ Uses the same `lexi_core::{openai, rtc, codec, jitter}` modules as the Android a
 
 ```sh
 # 1. a minter (local, or the deployed one)
-OPENAI_API_KEY=... cargo run -p lexi-minter
+OPENAI_API_KEY=... cargo run -p lexi
 # 2. talk to Lexi — use headphones (no echo cancellation on desktop)
 cargo run -p desk -- --minter http://localhost:8080
 # dev only: skip the minter, key from the environment (never a file or argument)

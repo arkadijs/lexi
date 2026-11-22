@@ -115,8 +115,8 @@ pub fn mic_ring() -> (MicProducer, Consumer<i16>) {
 /// Smoothed RMS levels (0..1) published by the net thread, as `f32` bits.
 #[derive(Debug, Clone, Default)]
 pub struct Levels {
-    mic: Arc<AtomicU32>,
-    bot: Arc<AtomicU32>,
+    pub(crate) mic: Arc<AtomicU32>,
+    pub(crate) bot: Arc<AtomicU32>,
 }
 
 impl Levels {
@@ -128,7 +128,7 @@ impl Levels {
     }
 }
 
-fn rms(pcm: &[i16]) -> f32 {
+pub(crate) fn rms(pcm: &[i16]) -> f32 {
     if pcm.is_empty() {
         return 0.0;
     }
@@ -136,7 +136,7 @@ fn rms(pcm: &[i16]) -> f32 {
     ((sum / pcm.len() as f64).sqrt() / 32768.0) as f32
 }
 
-fn smooth(atom: &AtomicU32, new: f32) {
+pub(crate) fn smooth(atom: &AtomicU32, new: f32) {
     let old = f32::from_bits(atom.load(Ordering::Relaxed));
     // fast attack, slower release
     let k = if new > old { 0.5 } else { 0.15 };

@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: lexi-minter
+  name: lexi
 spec:
   replicas: 2
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
   selector:
-    matchLabels: { app.kubernetes.io/name: lexi-minter }
+    matchLabels: { app.kubernetes.io/name: lexi }
   template:
     metadata:
-      labels: { app.kubernetes.io/name: lexi-minter }
+      labels: { app.kubernetes.io/name: lexi }
     spec:
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
@@ -21,18 +21,22 @@ spec:
         runAsGroup: 65532
         seccompProfile: { type: RuntimeDefault }
       containers:
-        - name: minter
-          image: lexi-minter
+        - name: lexi
+          image: lexi
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
             - { name: metrics, containerPort: 9090 }
           envFrom:
-            - configMapRef: { name: lexi-minter-env }
+            - configMapRef: { name: lexi-env }
           env:
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef: { name: openai-api-key, key: OPENAI_API_KEY }
+            # Optional: without the Secret the Google provider answers 503 and OpenAI keeps working.
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef: { name: gemini-api-key, key: GEMINI_API_KEY, optional: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -57,4 +61,4 @@ spec:
             - { name: instructions, mountPath: /etc/lexi, readOnly: true }
       volumes:
         - name: instructions
-          configMap: { name: lexi-minter-instructions }
+          configMap: { name: lexi-instructions }

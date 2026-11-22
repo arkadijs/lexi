@@ -5,6 +5,7 @@
 
 pub mod call;
 pub mod codec;
+pub mod gemini;
 pub mod jitter;
 pub mod openai;
 pub mod pricing;

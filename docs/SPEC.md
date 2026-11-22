@@ -1,8 +1,9 @@
 # Lexi — Product & Technical Specification
 
-> Codename **Lexi** (rename freely). A voice-first Android app for building word acumen:
-> the user "calls" an AI vocabulary coach and talks to it, while the single screen shows
-> GPU-rendered fluid or fractal visuals that react to the conversation.
+> **Lexi**: a generic voice chat bot for Android (not a vocabulary or language coach). The user "calls" an AI
+> that talks back, can search the web for current events, and answers in the language they speak; the single
+> screen shows GPU-rendered fluid or fractal visuals that react to the conversation. Two providers: OpenAI
+> Realtime (WebRTC) and Google Gemini Live (WebSocket).
 
 Status: v1 spec. Items marked **[VERIFY]** depend on external APIs that change often — check
 the current official docs before implementing them.
@@ -12,14 +13,15 @@ the current official docs before implementing them.
 ## 1. Goals and non-goals
 
 ### Goals
-- G1. Voice conversation with an AI coach over **WebRTC** directly to the **OpenAI Realtime API**
-  (model `gpt-realtime-2.1-mini`).
+- G1. Voice conversation with an AI over **WebRTC** directly to the **OpenAI Realtime API** (`gpt-realtime-2.1-mini`
+  "Mini" by default, `gpt-realtime-2.1` "Smart" selectable), or over a **WebSocket** to **Google Gemini Live**
+  (`gemini-3.8-live`); the user picks the provider (§2.1).
 - G2. Audio works on the **loudspeaker, earpiece and wired/Bluetooth earbuds**, user-switchable.
 - G3. The call **keeps working when the phone is locked** or the app is in the background.
 - G4. One screen: full-screen **GPU visuals** (Navier–Stokes fluid or fractal explorer) + a few custom buttons.
 - G5. **Small and efficient**: Rust core via NDK, thin Kotlin shell, no heavy frameworks.
-- G6. The OpenAI API key never ships in the app. A **Rust token-minting service on Kubernetes**
-  issues one short-lived ephemeral key per call.
+- G6. No provider API key ships in the app. A **Rust service on Kubernetes** (`lexi`) issues one short-lived
+  ephemeral key per call and runs the web searches.
 
 ### Non-goals (v1)
 - iOS, tablets-specific layouts, wear OS.
@@ -34,9 +36,9 @@ the current official docs before implementing them.
 
 ## 2. Product behaviour
 
-### 2.1 The coach
-- **Prompt** (rewritten 2026-11-22; text in `minter/src/instructions.default.txt`, mirrored in the
-  `lexi-minter-instructions` ConfigMap `deploy/k8s/base/instructions.txt`, a test keeps them identical, so it
+### 2.1 The bot
+- **Prompt** (rewritten 2026-11-22; text in `server/src/instructions.default.txt`, mirrored in the
+  `lexi-instructions` ConfigMap `deploy/k8s/base/instructions.txt`, a test keeps them identical, so it
   changes without an app release). Two parts:
   1. *Language:* the model greets the user with one short sentence in Russian before they say anything, expects a
      Russian-speaking user and answers in Russian by default, switches language when the user does (or asks it to) and
@@ -51,28 +53,63 @@ the current official docs before implementing them.
   Why: the model kept talking and, after a barge-in, answered the user's "stop" with a new helpful monologue (the
   server starts a new response for every utterance). Measured on the live API with text prompts (seconds of bot speech,
   old prompt -> new prompt): small talk ~12 -> 2.7-4.2; a definition 18-20 -> 2.1-4.8; "stop" 1.8-4.7 -> 0.3-1.3; "ok,
-  got it" 3.7-8.3 -> 1.5-3.6; "tell me about octopuses in detail" 39-62 -> 10-14. Against the deployed minter: a stop
+  got it" 3.7-8.3 -> 1.5-3.6; "tell me about octopuses in detail" 39-62 -> 10-14. Against the deployed server: a stop
   request is answered in 0.7 s. Limits: replies to opinion questions still run 6-12 s, and barge-in with real audio was
   not part of this test.
 - **Greeting trigger:** instructions alone do not make the model speak first. The core sends `response.create` once
   when the `oai-events` channel opens (once per call: a reconnect does not greet again). It costs a few audio tokens.
-- Brevity and the vocabulary-coach role are no longer instructed; replies can be longer. The cost readout (§2.6)
-  shows what that costs.
-- Instructions, voice, turn detection and reasoning effort are set **server-side by the minter** when the ephemeral
-  key is created; the app only chooses the voice (below).
+- **Not a coach:** the product is a general conversation partner. The bot is named **Lexi** and says so; it greets
+  **exactly once** (a later "hello" from the user gets at most one word); the greeting includes its name. Verified
+  2026-11-22: on 12 sampled greetings (2 models x 3 voices x 2) 11 had one response; one Mini/Marin run added a second,
+  unprompted one; the user then reported the double greeting gone in real use.
+- **Gender:** the server appends a per-voice gender line to the instructions (`LEXI_VOICE_GENDERS`: Cedar male; Marin
+  and Alloy female; Gemini: Charon and Fenrir male, Kore and Leda female) so the bot says "рад" or "рада" about itself
+  in Russian and the like in other gendered languages. Verified by speech-to-text on both OpenAI models and on Gemini.
+- Instructions, voice, turn detection and reasoning effort are set **server-side by the server** when the ephemeral
+  key is created; the app only chooses provider, voice and (OpenAI only) model (below).
+- **Provider:** a pill to the left of the voice pill selects **OpenAI** (default) or **Google**. Sent as `provider` in
+  the token request (§5.2), remembered, locked during a call together with the voice and model pills. The voice list
+  follows the provider (OpenAI: Cedar, Marin, Alloy; Google: Charon, Fenrir, Kore, Leda, with a remembered choice per
+  provider); with Google the model pill shows "Live" and is disabled (one Live model, `gemini-3.8-live`).
+- **Google Gemini Live** (verified 2026-11-22 against the live API; docs at aistudio.google.com/docs/live-api). Live is
+  **WebSocket only** (no WebRTC): the server mints a one-use ephemeral token with `POST /v1beta/auth_tokens`, whose
+  `bidiGenerateContentSetup` field locks model, voice, instructions (with the gender line), Google's `googleSearch` tool
+  and audio output (the docs' `liveConnectConstraints` is rejected by the API); the app connects to
+  `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContentConstrained?access_token=<token>`
+  and sends an empty `setup`. Audio: 16 kHz 16-bit PCM from the mic (40 ms messages, `audio/pcm;rate=16000`), 24 kHz
+  PCM back in bursts faster than real time, so the core queues it and paces 20 ms frames into the playout ring;
+  `serverContent.interrupted` is barge-in; Google sends JSON in binary frames. Greeting: a text turn
+  (`realtimeInput.text`) when the session opens. **Web search is Google's own `googleSearch` tool, run inside the Live
+  session** (nothing for the app to answer; the model decides when to search and answered a news question 1.6 s after the
+  question). `serverContent.groundingMetadata` reports the queries, which the core bills at $14 per 1000 on top of the
+  tokens (the first 5000 a month are free, so the readout can only err high). Google search needs a funded project (on a
+  free-tier key the session was closed with 1011 "exceeded your current quota"). `usageMetadata` arrives once per generation with the whole prompt
+  again, so each is a delta; thinking tokens are billed as output. Measured: connect to live 1.4 s on the phone;
+  Gemini 3.8 Live spends ~100-300 thinking tokens per turn (a `thinkingLevel` knob exists, `LEXI_GEMINI_THINKING`,
+  untested). Sessions last about 15 minutes of audio (no resumption yet). Gemini billing needs a prepaid balance
+  (HTTP 402 / close 1011 "prepayment credits are depleted" otherwise).
+
+- **Providers are compartmentalized.** Each provider has its own server module and Secret, its own core transport
+  and its own search: OpenAI = `server/src/openai.rs` (token + `POST /v1/search`, the Responses `web_search` tool),
+  `core/src/rtc` + `core/src/openai` (WebRTC, tool loop); Google = `server/src/gemini.rs` (token only),
+  `core/src/gemini` (WebSocket; search runs inside the session). Neither depends on the other's key: without
+  `GEMINI_API_KEY` the Google provider answers 503 and OpenAI is unaffected, and the reverse. Only the call
+  supervisor, the pricing table, the app UI and the shared prompt are common. (A Gemini `generateContent` search
+  backend for the OpenAI bot measured 1.5 s against OpenAI's 5.7 s, but was not adopted: it would make the OpenAI bot
+  depend on a Google key.)
 - **Voice:** selectable from a popup at the top of the screen (§2.2) with three entries, **Cedar** (the default),
-  **Marin** and **Alloy**, no section headers. The minter accepts all ten built-in voices (`LEXI_VOICES`); only the app's menu is
-  narrowed. The choice is sent as `voice` in the token request (§5.2), validated by the minter, remembered across
+  **Marin** and **Alloy**, no section headers. The server accepts all ten built-in voices (`LEXI_VOICES`); only the app's menu is
+  narrowed. The choice is sent as `voice` in the token request (§5.2), validated by the server, remembered across
   launches (a stored voice that is no longer offered falls back to Cedar) and **fixed for the whole call**: the API
   locks the voice once the model has spoken, so both selectors are disabled (dimmed, not clickable) while a call runs.
 - **Model:** a second pill beside the voice pill (same width, symmetric around the centre) chooses **Mini**
-  (`gpt-realtime-2.1-mini`, the default) or **Full** (`gpt-realtime-2.1`). Sent as `model` in the token request, validated
-  against the minter's `LEXI_MODELS`, remembered, locked during a call. The prompt was checked against both models
-  (2026-11-22, text prompts through the desk harness): replies are equally short on Full, "stop" is answered in 0.8-1.7 s.
+  (`gpt-realtime-2.1-mini`, the default) or **Smart** (`gpt-realtime-2.1`). Sent as `model` in the token request, validated
+  against the server's `LEXI_MODELS`, remembered, locked during a call. The prompt was checked against both models
+  (2026-11-22, text prompts through the desk harness): replies are equally short on Smart, "stop" is answered in 0.8-1.7 s.
 - **Name and web search:** the bot is called **Lexi** (the prompt says so and the greeting includes it). The session has
   one function tool, `web_search(query)`. Realtime has no hosted web search (tool types: `function`, `mcp`), so the app
-  answers the call: `response.done` carries a `function_call` item, the core calls the minter's `POST /v1/search`
-  (attested, rate limited; the minter runs the Responses API `web_search` tool with `gpt-4.1-mini` and returns two plain
+  answers the call: `response.done` carries a `function_call` item, the core calls the server's `POST /v1/search`
+  (attested, rate limited; the server runs the Responses API `web_search` tool with `gpt-4.1-mini` and returns two plain
   sentences), sends `conversation.item.create` (`function_call_output`) and `response.create`. The prompt tells the bot to
   say a short filler first ("Секунду, гляну"); a search takes about 3-6 s. Each search adds an estimated $0.015 to the
   call cost ($10 per 1000 calls plus a fixed 8 000 input tokens at gpt-4.1-mini rates). Off with `LEXI_WEB_SEARCH=false`.
@@ -90,7 +127,7 @@ the current official docs before implementing them.
   the first version took ~5.6 s because DTX silence frames were not sent (§4.3). After fixing that: server VAD 500 ms +
   default reasoning ≈ 1.47 s; `reasoning.effort=minimal` ≈ 1.29 s; silence 300 ms ≈ 1.41 s; both ≈ 1.19 s; semantic VAD
   "high" ≈ 1.77 s (slower). Defaults chosen: server VAD with `silence_duration_ms` 400 and `reasoning.effort` **low**
-  (the API default; `minimal` is ~0.2 s faster but was not adopted). Both are minter settings, set in its ConfigMap and
+  (the API default; `minimal` is ~0.2 s faster but was not adopted). Both are server settings, set in its ConfigMap and
   changeable without an app release: `LEXI_VAD_SILENCE_MS`, `LEXI_REASONING_EFFORT`.
 
 ### 2.2 Screen (single Activity, portrait + landscape)
@@ -130,7 +167,7 @@ the current official docs before implementing them.
 ### 2.4 Call lifecycle
 1. User taps Call → app requests `RECORD_AUDIO` (and `POST_NOTIFICATIONS` on Android 13+) if missing.
 2. App starts the foreground service **while in the foreground**, then the service:
-   fetches an ephemeral key from the minter → builds the WebRTC offer → POSTs it to OpenAI
+   fetches an ephemeral key from the server → builds the WebRTC offer → POSTs it to OpenAI
    → applies the answer → audio flows.
 3. The call continues with the screen off or locked. An ongoing notification shows
    "Talking with Lexi", with **Mute** and **Hang up** actions.
@@ -153,13 +190,17 @@ of those usages priced with a **price table built into the app**.
   | Text | $0.60 | $0.06 | $2.40 |
   | Image | $0.80 | $0.08 | not listed |
 
-  `gpt-realtime-2.1` (Full), same source, verified 2026-11-22:
+  `gpt-realtime-2.1` (Smart), same source, verified 2026-11-22:
 
   | Modality | Input | Cached input | Output |
   |---|---|---|---|
   | Audio | $32.00 | $0.40 | $64.00 |
   | Text | $4.00 | $0.40 | $24.00 |
   | Image | $5.00 | $0.50 | not listed |
+
+  `gemini-3.8-live` (Google, paid tier; from the pricing page via a summary, **not yet checked against a bill**):
+  text $0.75 in / $4.50 out, audio $3.00 in / $12.00 out, image/video $1.00 in; no cached rate known, cached input is
+  priced like fresh input (the readout can only err high); thinking tokens count as output text.
 
   The on-screen total is **rounded up to the next cent** ($0.0011 shows as $0.01).
 
@@ -176,7 +217,7 @@ of those usages priced with a **price table built into the app**.
   token per 50 ms.
 - **Per call, across reconnects:** the total keeps accumulating if the call reconnects (billing does too), and resets
   when a new call starts. It stays on screen for 10 s after the call ends and then disappears.
-- **Unknown model:** the minter returns the model it used. If it is not in the built-in table (for example a changed
+- **Unknown model:** the server returns the model it used. If it is not in the built-in table (for example a changed
   `LEXI_MODEL`), the readout is hidden rather than wrong.
 - **Display:** US dollars, four decimals below $1 (`$0.0123`), two above. An estimate to be compared with the OpenAI
   usage dashboard; the table carries a `VERIFIED_ON` date and must be re-checked when prices or the model change.
@@ -191,9 +232,9 @@ of those usages priced with a **price table built into the app**.
 | N2 | **minSdk 31** (Android 12; needed for `setCommunicationDevice`), **targetSdk** 36 (the current Play requirement, verified 2026-11-21; not mandatory for a sideloaded app, but there is no reason to run in older compatibility modes). ABIs: `arm64-v8a` (required), `armeabi-v7a` (optional build flag). |
 | N3 | **Latency**: tap-to-first-audio < 2.5 s on 4G (excluding model think time). Mouth-to-ear added by the client < 80 ms (20 ms frames + ≤ 60 ms playout buffer). |
 | N4 | **CPU/battery**: during a call with the screen off, app CPU < 5 % of one big core on a mid-range device; no rendering, no busy loops. |
-| N5 | **Robustness**: no crash on permission denial, airplane mode, BT headset connect/disconnect mid-call, or the minter being unreachable. Rust panics must not cross FFI (`catch_unwind` at every JNI entry point); `panic = "abort"` only in release, after FFI guards. |
+| N5 | **Robustness**: no crash on permission denial, airplane mode, BT headset connect/disconnect mid-call, or the server being unreachable. Rust panics must not cross FFI (`catch_unwind` at every JNI entry point); `panic = "abort"` only in release, after FFI guards. |
 | N6 | **Security**: no OpenAI key in the APK or the repo. The ephemeral key is held only in memory and never logged. TLS everywhere (rustls). |
-| N7 | **Privacy**: no audio stored on device or server. The minter logs no PII; the install ID is hashed before being sent as the OpenAI safety identifier. |
+| N7 | **Privacy**: no audio stored on device or server. The server logs no PII; the install ID is hashed before being sent as the OpenAI safety identifier. |
 
 ---
 
@@ -215,13 +256,13 @@ of those usages priced with a **price table built into the app**.
 │ audio/    AAudio in/out (VoiceCommunication), ring buffers   │
 │ codec/    libopus encode/decode 48 kHz mono 20 ms            │
 │ rtc/      str0m session, UDP loop, SDP, data channel         │
-│ openai/   token fetch (minter), SDP exchange, event JSON     │
+│ openai/   token fetch (server), SDP exchange, event JSON     │
 │ jitter/   playout buffer (60 ms target, PLC on loss)         │
 │ state/    call state machine, shared atomics (levels, mute)  │
 └──────────────┬──────────────────────────────────────────────┘
                │ HTTPS
    ┌───────────▼───────────┐        ┌─────────────────────────┐
-   │ lexi-minter (Rust,    │ HTTPS  │ OpenAI                  │
+   │ lexi (Rust,    │ HTTPS  │ OpenAI                  │
    │ axum, Kubernetes)     ├───────►│ POST /v1/realtime/      │
    └───────────────────────┘        │      client_secrets     │
    app ──── WebRTC (UDP, DTLS-SRTP + SCTP) ───► /v1/realtime/calls
@@ -243,7 +284,8 @@ of those usages priced with a **price table built into the app**.
 init(context, callback: NativeCallback)               // once, from Application
 surfaceCreated(surface), surfaceChanged(w, h), surfaceDestroyed()
 setVisualMode(mode: Int), touch(action, pointerId, x, y), pinch(scale, fx, fy)
-startCall(minterUrl: String, installIdHash: String, attestKey: String)   // runs async, reports via callback;
+startCall(serverUrl: String, installIdHash: String, attestKey: String,
+          voice: String, model: String, provider: String)   // runs async, reports via callback;
                                                       // attestKey = build-time shared key ("" = none), see §5.4
 endCall()
 setMuted(muted: Boolean)
@@ -277,7 +319,7 @@ NativeCallback.onCost(microUsd: Long)                 // running cost of the cur
 
 ---
 
-## 5. Token-minting service — `lexi-minter`
+## 5. Token-minting service — `lexi`
 
 ### 5.1 Purpose
 Holds the OpenAI API key. Issues **one ephemeral client secret per call**, with the session
@@ -288,10 +330,12 @@ configuration (model, instructions, voice, turn detection) fixed server-side.
 POST /v1/call-token
   Headers: X-Lexi-Install: <sha256(install-id) hex>
            X-Lexi-Attest: <app attestation token>          (see 5.4)
-  Body: {}   (optional: {"voice":"cedar","model":"gpt-realtime-2.1","locale":"en"}; voice must be one of
-             LEXI_VOICES, model one of LEXI_MODELS)
-  200 → {"token":"ek_...","expires_at":<unix>,"model":"gpt-realtime-2.1-mini"}
-  400 invalid body / unknown voice / unknown model · 401 attestation failed · 429 rate limited (Retry-After) ·
+  Body: {}   (optional: {"voice":"cedar","model":"gpt-realtime-2.1","provider":"openai","locale":"en"}; voice must be one of
+             LEXI_VOICES (OpenAI) or LEXI_GEMINI_VOICES (provider "google"), model one of LEXI_MODELS and not
+             allowed with "google"; "google" answers {"token":"auth_tokens/...","model":"gemini-3.8-live",
+             "provider":"google"} and needs GEMINI_API_KEY, else 503)
+  200 → {"token":"ek_...","expires_at":<unix>,"model":"gpt-realtime-2.1-mini","provider":"openai"}
+  400 invalid body / unknown voice / unknown model / unknown provider · 401 attestation failed · 429 rate limited (Retry-After) ·
   502 upstream error · 503 not ready
 POST /v1/search  (same headers; separate rate limits LEXI_RATE_SEARCH_PER_INSTALL=60/h, _PER_IP=240/h)
   Body: {"query":"..."}  (1-300 chars)   200 → {"text":"two plain sentences"}   404 when LEXI_WEB_SEARCH=false
@@ -327,8 +371,8 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
   computes it from the `attestKey` passed to `startCall`. Weak (the key ships in the app), MVP only.
 - `shared-key` is the **production mode** for this project: the app is sideloaded for the author and a few
   friends, so a leaked key is a manageable event. Rotation: replace the `lexi-attest-key` Secret, restart the
-  minter, rebuild the APK; old builds then get 401 until updated. If one friend's copy leaks or someone leaves,
-  per-friend keys (several accepted keys on the minter) are the next step.
+  server, rebuild the APK; old builds then get 401 until updated. If one friend's copy leaks or someone leaves,
+  per-friend keys (several accepted keys on the server) are the next step.
 - `play-integrity`: **not planned** (it only works for apps distributed through Google Play). The stub behind the
   `play-integrity` cargo feature is unused and may be deleted.
 
@@ -364,7 +408,7 @@ Service: `CallService` with `android:foregroundServiceType="microphone"`.
 - On call start: `AudioManager.mode = MODE_IN_COMMUNICATION`; request audio focus
   `AUDIOFOCUS_GAIN` with `USAGE_VOICE_COMMUNICATION`.
 - Route selection via `availableCommunicationDevices` / `setCommunicationDevice`.
-  Default priority: Bluetooth > wired headset > **speaker** (the coach is used hands-free) >
+  Default priority: Bluetooth > wired headset > **speaker** (the bot is used hands-free) >
   earpiece. Remember the last user choice.
 - React to device add/remove (`AudioDeviceCallback`): auto-switch to a newly connected headset.
 - Permanent focus loss (incoming phone call) → end the call cleanly with the reason "interrupted".
@@ -381,13 +425,13 @@ buttons, coexistence with cellular calls).
 lexi/
 ├─ CLAUDE.md                 # guidance for Claude CLI sessions
 ├─ docs/SPEC.md  docs/PLAN.md
-├─ Cargo.toml                # workspace: core, minter, devtools/desk
+├─ Cargo.toml                # workspace: core, server (crate `lexi`), devtools/desk
 ├─ core/                     # lexi-core (cdylib for Android, rlib for desktop harness)
 ├─ devtools/desk/            # desktop harness: same rtc/openai/codec code + cpal audio
-├─ minter/                   # lexi-minter service + Dockerfile
+├─ server/                   # lexi service + Dockerfile
 ├─ android/                  # Gradle project, app module (Kotlin shell), jniLibs output
 ├─ deploy/k8s/               # kustomize base + overlays
-└─ .github/workflows/        # CI: rust checks, android build, minter image, manifests
+└─ .github/workflows/        # CI: rust checks, android build, server image, manifests
 ```
 
 ## 8. Build & tooling
@@ -403,12 +447,12 @@ lexi/
 
 ## 9. Testing
 - Rust unit tests: jitter buffer, Opus framing/timestamps, SDP munging, event parsing,
-  state machine, minter handlers (mock OpenAI with `wiremock`).
+  state machine, server handlers (mock OpenAI with `wiremock`).
 - **Desktop harness** (`devtools/desk`): CLI that mints a token (or uses a dev key from env),
   connects to OpenAI with the **same** rtc/openai/codec modules, and uses `cpal` for audio.
   This is the main way to test the WebRTC path without a phone.
 - Android instrumented smoke test: launch, grant permission, start/stop call against a
-  minter in `off` attestation mode.
+  server in `off` attestation mode.
 - Manual device matrix: one Pixel, one Samsung, one Xiaomi; speaker/earpiece/BT; lock
   screen for 10 min; Wi-Fi→LTE handover.
 
@@ -420,5 +464,5 @@ lexi/
 5. Toggle Wi-Fi off mid-call → reconnects within 5 s.
 6. Visuals at ≥ 55 fps on a mid-range device; rendering stops when the screen is off.
 7. Release APK size < 6 MB.
-8. Minter: `kubectl apply -k deploy/k8s/overlays/dev` works on a kind cluster; p99 latency < 400 ms
+8. Server: `kubectl apply -k deploy/k8s/overlays/dev` works on a kind cluster; p99 latency < 400 ms
    (dominated by upstream); no secrets in the repo; image runs as non-root.

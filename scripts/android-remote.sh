@@ -2,7 +2,7 @@
 # Build the Android app on remote (x86_64; Google's build tools don't run on this aarch64 dev box).
 #   scripts/android-remote.sh [gradle args]      # default: assembleDebug; APK is copied to dist/
 # Build-time settings (see android/app/build.gradle.kts):
-#   LEXI_MINTER_URL=https://lexi-minter.example.com   # default: debug http://localhost:8080 (adb reverse), release = remote
+#   LEXI_MINTER_URL=https://lexi.example.com   # default: debug http://localhost:8080 (adb reverse), release = remote
 #   LEXI_ATTEST_FROM_CLUSTER=1                        # read the shared attestation key from the cluster Secret
 #   LEXI_COLD=1                                       # throwaway target volume = full dependency compile (use with --rerun-tasks)
 # Every build prints a [measure] summary of how many cores it really kept busy (scripts/measure-lib.sh).

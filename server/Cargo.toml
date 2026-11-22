@@ -1,5 +1,5 @@
 [package]
-name = "lexi-minter"
+name = "lexi"
 description = "Ephemeral-token minting service for the OpenAI Realtime API (SPEC §5)"
 version.workspace = true
 edition.workspace = true

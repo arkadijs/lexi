@@ -5,9 +5,9 @@
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::Request;
-use lexi_minter::attest::sign;
-use lexi_minter::config::{Config, Secret};
-use lexi_minter::{app, AppState};
+use lexi::attest::sign;
+use lexi::config::{Config, Secret};
+use lexi::{app, AppState};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;

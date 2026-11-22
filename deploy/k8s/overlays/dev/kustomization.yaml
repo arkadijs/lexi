@@ -2,29 +2,29 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources: [../../base]
 images:
-  - name: lexi-minter
-    newName: lexi-minter
+  - name: lexi
+    newName: lexi
     newTag: dev
 patches:
-  - target: { kind: Ingress, name: lexi-minter }
+  - target: { kind: Ingress, name: lexi }
     patch: |-
       $patch: delete
       apiVersion: networking.k8s.io/v1
       kind: Ingress
-      metadata: { name: lexi-minter }
-  - target: { kind: HorizontalPodAutoscaler, name: lexi-minter }
+      metadata: { name: lexi }
+  - target: { kind: HorizontalPodAutoscaler, name: lexi }
     patch: |-
       $patch: delete
       apiVersion: autoscaling/v2
       kind: HorizontalPodAutoscaler
-      metadata: { name: lexi-minter }
-  - target: { kind: PodDisruptionBudget, name: lexi-minter }
+      metadata: { name: lexi }
+  - target: { kind: PodDisruptionBudget, name: lexi }
     patch: |-
       $patch: delete
       apiVersion: policy/v1
       kind: PodDisruptionBudget
-      metadata: { name: lexi-minter }
-  - target: { kind: Deployment, name: lexi-minter }
+      metadata: { name: lexi }
+  - target: { kind: Deployment, name: lexi }
     patch: |-
       - { op: replace, path: /spec/replicas, value: 1 }
       - { op: replace, path: /spec/template/spec/containers/0/imagePullPolicy, value: IfNotPresent }

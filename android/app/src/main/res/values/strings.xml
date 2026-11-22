@@ -39,6 +39,8 @@
     <string name="st_remote">Call ended</string>
     <string name="st_max_session">Session time limit reached</string>
     <string name="cd_voice">Voice: %1$s. Tap to change</string>
+    <string name="cd_provider">Provider: %1$s. Tap to change</string>
+    <string name="cd_model_fixed">Model: Gemini Live (fixed)</string>
     <string name="cd_model">Model: %1$s. Tap to change</string>
     <string name="cd_cost">Cost of this call so far: %1$s</string>
 </resources>

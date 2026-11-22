@@ -1,4 +1,4 @@
-use lexi_minter::{app, config::Config, metrics_app, AppState};
+use lexi::{app, config::Config, metrics_app, AppState};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;

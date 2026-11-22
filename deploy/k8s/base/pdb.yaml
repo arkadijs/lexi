@@ -1,8 +1,8 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: lexi-minter
+  name: lexi
 spec:
   minAvailable: 1
   selector:
-    matchLabels: { app.kubernetes.io/name: lexi-minter }
+    matchLabels: { app.kubernetes.io/name: lexi }

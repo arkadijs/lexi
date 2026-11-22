@@ -8,15 +8,15 @@ cd "$(dirname "$0")/.."
 CLUSTER="${KIND_CLUSTER:-lexi}"
 
 kind get clusters | grep -qx "$CLUSTER" || kind create cluster --name "$CLUSTER"
-docker build -f minter/Dockerfile -t lexi-minter:dev .
-kind load docker-image lexi-minter:dev --name "$CLUSTER"
+docker build -f server/Dockerfile -t lexi:dev .
+kind load docker-image lexi:dev --name "$CLUSTER"
 
 kubectl create namespace lexi --dry-run=client -o yaml | kubectl apply -f -
 printf %s "$OPENAI_API_KEY" | kubectl -n lexi create secret generic openai-api-key \
   --from-file=OPENAI_API_KEY=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -k deploy/k8s/overlays/dev
-kubectl -n lexi rollout restart deploy/lexi-minter >/dev/null
-kubectl -n lexi rollout status deploy/lexi-minter --timeout=180s
+kubectl -n lexi rollout restart deploy/lexi >/dev/null
+kubectl -n lexi rollout status deploy/lexi --timeout=180s
 
 echo "port-forward on http://localhost:8080 (Ctrl-C to stop)"
-exec kubectl -n lexi port-forward svc/lexi-minter 8080:80
+exec kubectl -n lexi port-forward svc/lexi 8080:80

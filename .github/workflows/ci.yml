@@ -35,7 +35,7 @@ jobs:
           for o in dev prod remote; do
             kubectl kustomize deploy/k8s/overlays/$o | kubeconform -strict -summary -ignore-missing-schemas
           done
-  minter-image:
+  image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +45,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: minter/Dockerfile
+          file: server/Dockerfile
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -53,15 +53,15 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: minter/Dockerfile
+          file: server/Dockerfile
           load: true
-          tags: lexi-minter:ci
+          tags: lexi:ci
           cache-from: type=gha
       - name: image < 15 MB
-        run: test "$(docker image inspect lexi-minter:ci --format '{{.Size}}')" -lt 15000000
+        run: test "$(docker image inspect lexi:ci --format '{{.Size}}')" -lt 15000000
       - uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: lexi-minter:ci
+          image-ref: lexi:ci
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true

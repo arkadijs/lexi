@@ -3,9 +3,9 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use lexi_minter::attest::sign;
-use lexi_minter::config::{Config, Secret};
-use lexi_minter::{app, AppState};
+use lexi::attest::sign;
+use lexi::config::{Config, Secret};
+use lexi::{app, AppState};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tower::ServiceExt;
@@ -538,4 +538,274 @@ async fn search_needs_attestation_when_configured_and_has_its_own_rate_limit() {
     // Calls to /v1/call-token are not affected by the search budget.
     let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
     assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn instructions_carry_the_voices_gender() {
+    for (voice, must, mustnot) in [
+        (
+            "cedar",
+            "always speak about yourself in the masculine",
+            "in the feminine",
+        ),
+        (
+            "marin",
+            "always speak about yourself in the feminine",
+            "in the masculine",
+        ),
+        (
+            "alloy",
+            "always speak about yourself in the feminine",
+            "in the masculine",
+        ),
+    ] {
+        let up = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ok_upstream())
+            .mount(&up)
+            .await;
+        let r = router(config(&up.uri(), &[]));
+        let body = format!(r#"{{"voice":"{voice}"}}"#);
+        let (status, ..) = send(&r, post_body(&body, Some(INSTALL), None, "10.0.0.1")).await;
+        assert_eq!(status, StatusCode::OK);
+        let sent: serde_json::Value = up.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        let ins = sent["session"]["instructions"].as_str().unwrap();
+        assert!(
+            ins.contains(must) && !ins.contains(mustnot),
+            "{voice}: {ins}"
+        );
+        assert!(ins.contains("Your name is Lexi"), "base prompt kept");
+    }
+}
+
+fn gemini_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({"name": "auth_tokens/abc123"}))
+}
+
+fn gemini_config(upstream: &str, extra: &[(&str, &str)]) -> Config {
+    let mut e = vec![
+        ("GEMINI_API_KEY", "g-test-key"),
+        ("LEXI_GEMINI_BASE_URL", upstream),
+    ];
+    e.extend_from_slice(extra);
+    config(upstream, &e)
+}
+
+#[tokio::test]
+async fn google_provider_mints_a_locked_ephemeral_token() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1beta/auth_tokens"))
+        .and(header("x-goog-api-key", "g-test-key"))
+        .respond_with(gemini_ok())
+        .expect(1)
+        .mount(&up)
+        .await;
+    let r = router(gemini_config(&up.uri(), &[]));
+    let (status, _, text) = send(
+        &r,
+        post_body(
+            r#"{"provider":"google","voice":"kore"}"#,
+            Some(INSTALL),
+            None,
+            "10.0.0.1",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["token"], "auth_tokens/abc123");
+    assert_eq!(v["provider"], "google");
+    assert_eq!(v["model"], "gemini-3.8-live");
+
+    let sent: serde_json::Value = up.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert_eq!(sent["uses"], 1);
+    let setup = &sent["bidiGenerateContentSetup"];
+    assert_eq!(setup["model"], "models/gemini-3.8-live");
+    assert_eq!(
+        setup["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
+            ["voiceName"],
+        "Kore"
+    );
+    assert_eq!(setup["generationConfig"]["responseModalities"][0], "AUDIO");
+    let ins = setup["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ins.contains("Your name is Lexi") && ins.contains("in the feminine"),
+        "{ins}"
+    );
+    // Default: Google's own search inside the Live session.
+    assert!(setup["tools"][0]["googleSearch"].is_object(), "{setup}");
+    // expireTime / newSessionExpireTime are RFC 3339 UTC timestamps.
+    assert!(sent["newSessionExpireTime"]
+        .as_str()
+        .unwrap()
+        .ends_with('Z'));
+}
+
+#[tokio::test]
+async fn google_provider_uses_the_male_line_for_male_voices_and_validates() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(gemini_ok())
+        .mount(&up)
+        .await;
+    let r = router(gemini_config(&up.uri(), &[]));
+    let (status, ..) = send(
+        &r,
+        post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let sent: serde_json::Value = up.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    let ins = sent["bidiGenerateContentSetup"]["systemInstruction"]["parts"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        ins.contains("in the masculine"),
+        "default voice charon is male"
+    );
+    assert_eq!(
+        sent["bidiGenerateContentSetup"]["generationConfig"]["speechConfig"]["voiceConfig"]
+            ["prebuiltVoiceConfig"]["voiceName"],
+        "Charon"
+    );
+    for body in [
+        r#"{"provider":"google","voice":"cedar"}"#, // an OpenAI voice
+        r#"{"provider":"google","model":"gpt-realtime-2.1"}"#, // models are OpenAI-only
+        r#"{"provider":"azure"}"#,
+        r#"{"voice":"kore"}"#, // Gemini voice without the provider
+    ] {
+        let (status, ..) = send(&r, post_body(body, Some(INSTALL), None, "10.0.0.2")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn google_provider_needs_its_own_key_and_maps_upstream_errors() {
+    let up = MockServer::start().await;
+    // No GEMINI_API_KEY: google is not ready, openai still works.
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let (status, ..) = send(
+        &r,
+        post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let g = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(402))
+        .mount(&g)
+        .await;
+    let r = router(gemini_config(&g.uri(), &[]));
+    let (status, ..) = send(
+        &r,
+        post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn gemini_search_is_googles_builtin_tool_and_can_be_turned_off() {
+    for (mode, on) in [("builtin", true), ("off", false)] {
+        let up = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(gemini_ok())
+            .mount(&up)
+            .await;
+        let r = router(gemini_config(&up.uri(), &[("LEXI_GEMINI_SEARCH", mode)]));
+        let (status, ..) = send(
+            &r,
+            post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let sent: serde_json::Value = up.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        let tools = &sent["bidiGenerateContentSetup"]["tools"];
+        if on {
+            assert!(tools[0]["googleSearch"].is_object());
+            assert!(tools[0].get("functionDeclarations").is_none());
+        } else {
+            assert!(tools.is_null(), "{tools}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn search_is_openai_only_even_when_a_google_key_is_configured() {
+    // Compartmentalized providers: /v1/search never touches Google, whatever keys are set.
+    let o = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "from openai"}]}]
+        })))
+        .expect(1)
+        .mount(&o)
+        .await;
+    let g = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&g)
+        .await;
+    let r = router(gemini_config(
+        &g.uri(),
+        &[("LEXI_OPENAI_BASE_URL", &o.uri())],
+    ));
+    let (status, _, text) = send(
+        &r,
+        search_req(r#"{"query":"x"}"#, Some(INSTALL), "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    assert!(text.contains("from openai"));
+}
+
+#[tokio::test]
+async fn google_works_without_an_openai_key_and_openai_without_a_google_key() {
+    let g = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(gemini_ok())
+        .mount(&g)
+        .await;
+    let uri = g.uri();
+    let r = router(config(
+        &uri,
+        &[
+            ("OPENAI_API_KEY", ""),
+            ("GEMINI_API_KEY", "g-test-key"),
+            ("LEXI_GEMINI_BASE_URL", &uri),
+        ],
+    ));
+    let (status, ..) = send(
+        &r,
+        post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.2")).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "openai is not ready, google is"
+    );
+    // The reverse is covered by google_provider_needs_its_own_key_and_maps_upstream_errors.
 }

@@ -22,7 +22,7 @@ The build uses all cores of the host. On an x86_64 machine with the SDK, `script
 
 | Setting (env / `-P`) | Default | Meaning |
 |---|---|---|
-| `LEXI_MINTER_URL` / `lexiMinterUrl` | debug `http://localhost:8080`, release `https://lexi-minter.example.com` | `BuildConfig.MINTER_URL`. Cleartext is allowed to `localhost` in debug only (use `adb reverse tcp:8080 tcp:8080` to reach a minter on the dev machine). |
+| `LEXI_MINTER_URL` / `lexiMinterUrl` | debug `http://localhost:8080`, release `https://lexi.example.com` | `BuildConfig.MINTER_URL`. Cleartext is allowed to `localhost` in debug only (use `adb reverse tcp:8080 tcp:8080` to reach a minter on the dev machine). |
 | `LEXI_ATTEST_KEY` / `lexiAttestKey` | empty (no attestation) | Shared key for the minter's `shared-key` mode. It ships inside the APK (weak, MVP only; Play Integrity replaces it in Phase 7). |
 
 `scripts/android-remote.sh` forwards `LEXI_MINTER_URL`, and with `LEXI_ATTEST_FROM_CLUSTER=1` reads the key from the
@@ -30,7 +30,7 @@ cluster Secret (via an env-file, so it never appears on a command line). Example
 deployed minter:
 
 ```sh
-LEXI_MINTER_URL=https://lexi-minter.example.com LEXI_ATTEST_FROM_CLUSTER=1 scripts/android-remote.sh assembleDebug
+LEXI_MINTER_URL=https://lexi.example.com LEXI_ATTEST_FROM_CLUSTER=1 scripts/android-remote.sh assembleDebug
 adb install -r dist/app-debug.apk
 ```
 

@@ -2,13 +2,13 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources: [../../base]
 configMapGenerator:
-  - name: lexi-minter-env
+  - name: lexi-env
     behavior: merge
     literals:
       - LEXI_ATTEST_MODE=shared-key   # switch to play-integrity in Phase 7
       - LEXI_TRUST_FORWARDED_FOR=true # rightmost X-Forwarded-For is added by the ingress
 patches:
-  - target: { kind: Deployment, name: lexi-minter }
+  - target: { kind: Deployment, name: lexi }
     patch: |-
       - op: add
         path: /spec/template/spec/containers/0/env/-

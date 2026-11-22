@@ -54,10 +54,26 @@ const GPT_REALTIME_2_1: Rates = Rates {
     image_cached: 500,
 };
 
+/// `gemini-3.8-live` (Google Gemini Live), paid tier, per 1M tokens: text $0.75 in / $4.50 out, audio $3.00 in /
+/// $12.00 out, image/video $1.00 in. From Google's pricing page via a summary on 2026-11-22: **not yet checked
+/// against a real bill**. Cached input is priced like fresh input (no cached rate known; the readout can only
+/// err high). Thinking tokens are billed as output and are mapped to output text.
+const GEMINI_3_8_LIVE: Rates = Rates {
+    audio_in: 3_000,
+    audio_cached: 3_000,
+    audio_out: 12_000,
+    text_in: 750,
+    text_cached: 750,
+    text_out: 4_500,
+    image_in: 1_000,
+    image_cached: 1_000,
+};
+
 pub fn rates(model: &str) -> Option<&'static Rates> {
     match model {
         "gpt-realtime-2.1-mini" => Some(&GPT_REALTIME_2_1_MINI),
         "gpt-realtime-2.1" => Some(&GPT_REALTIME_2_1),
+        "gemini-3.8-live" => Some(&GEMINI_3_8_LIVE),
         _ => None,
     }
 }
