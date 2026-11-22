@@ -1,6 +1,6 @@
 # Lexi — Product & Technical Specification
 
-> **Lexi**: a generic voice chat bot for Android (not a vocabulary or language coach). The user "calls" an AI
+> **Lexi**: a generic voice chat bot for Android. The user "calls" an AI
 > that talks back, can search the web for current events, and answers in the language they speak; the single
 > screen shows GPU-rendered fluid or fractal visuals that react to the conversation. Two providers: OpenAI
 > Realtime (WebRTC) and Google Gemini Live (WebSocket).
@@ -93,7 +93,7 @@ the current official docs before implementing them.
   and its own search: OpenAI = `server/src/openai.rs` (token + `POST /v1/search`, the Responses `web_search` tool),
   `core/src/rtc` + `core/src/openai` (WebRTC, tool loop); Google = `server/src/gemini.rs` (token only),
   `core/src/gemini` (WebSocket; search runs inside the session). Neither depends on the other's key: without
-  `GEMINI_API_KEY` the Google provider answers 503 and OpenAI is unaffected, and the reverse. Only the call
+  `GOOGLE_API_KEY` the Google provider answers HTTP 501 ("provider not configured", shown in the app as "This provider is not set up on the server") and OpenAI is unaffected, and the reverse. Only the call
   supervisor, the pricing table, the app UI and the shared prompt are common. (A Gemini `generateContent` search
   backend for the OpenAI bot measured 1.5 s against OpenAI's 5.7 s, but was not adopted: it would make the OpenAI bot
   depend on a Google key.)
@@ -336,14 +336,14 @@ POST /v1/call-token
   Body: {}   (optional: {"voice":"cedar","model":"gpt-realtime-2.1","provider":"openai","locale":"en"}; voice must be one of
              LEXI_VOICES (OpenAI) or LEXI_GEMINI_VOICES (provider "google"), model one of LEXI_MODELS and not
              allowed with "google"; "google" answers {"token":"auth_tokens/...","model":"gemini-3.8-live",
-             "provider":"google"} and needs GEMINI_API_KEY, else 503)
+             "provider":"google"} and needs GOOGLE_API_KEY, else 501)
   200 → {"token":"ek_...","expires_at":<unix>,"model":"gpt-realtime-2.1-mini","provider":"openai"}
   400 invalid body / unknown voice / unknown model / unknown provider · 401 attestation failed · 429 rate limited (Retry-After) ·
-  502 upstream error · 503 not ready
+  501 provider not configured (no key for the requested provider) · 502 upstream error · 412 clock skew
 POST /v1/search  (same headers; separate rate limits LEXI_RATE_SEARCH_PER_INSTALL=60/h, _PER_IP=240/h)
   Body: {"query":"..."}  (1-300 chars)   200 → {"text":"two plain sentences"}   404 when LEXI_WEB_SEARCH=false
 GET /healthz   (liveness, no dependencies)
-GET /readyz    (ready once config is loaded and the key is present)
+GET /readyz    (ready once config is loaded; the body lists the configured providers, or says none is configured)
 GET /metrics   (Prometheus; on a separate port 9090)
 ```
 
@@ -385,9 +385,10 @@ header `OpenAI-Safety-Identifier: <install hash>`, body containing `expires_afte
   Ingress (TLS via cert-manager annotation, host configurable), HPA (CPU 70 %),
   PodDisruptionBudget (minAvailable 1), ConfigMap (instructions + non-secret config),
   Secret reference (`openai-api-key`, created out-of-band or via External Secrets; **never committed**),
-  NetworkPolicy (ingress from the ingress controller only; egress DNS + 443), ServiceMonitor (optional).
+  an optional NetworkPolicy (`deploy/k8s/optional/`, off by default: ingress from the ingress controller only, egress DNS + 443;
+  enabled with `LEXI_NETWORK_POLICY=on`), ServiceMonitor (optional).
 - Probes: liveness `/healthz`, readiness `/readyz`, startup probe.
-- CI builds the multi-arch image and runs `kubeconform` on the rendered manifests.
+- No CI for now (the workflows were removed before publishing); the image is built on the node by `scripts/deploy.sh`.
 
 ---
 

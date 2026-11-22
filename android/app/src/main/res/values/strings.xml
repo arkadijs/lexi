@@ -34,6 +34,7 @@
     <string name="lb_fractal">Fractal</string>
     <string name="st_auth">Not authorised. Update the app</string>
     <string name="st_clock">Check the date and time on your phone</string>
+    <string name="st_provider">This provider is not set up on the server. Pick the other one</string>
     <string name="st_rate">Too many calls. Try again later</string>
     <string name="st_service">Service unavailable. Try again</string>
     <string name="st_audio">Audio device problem</string>

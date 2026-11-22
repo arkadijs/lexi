@@ -1,3 +1,9 @@
+# OPTIONAL, off by default (scripts/deploy.sh applies it only with LEXI_NETWORK_POLICY=on). It locks the pods down to:
+# ingress only from the ingress controller's namespace (LEXI_INGRESS_NAMESPACE, default `projectcontour`) and, for
+# metrics, from a namespace called `monitoring`; egress only to cluster DNS (CoreDNS, label k8s-app=kube-dns in
+# kube-system) and to the internet on port 443 (OpenAI, Google), never to private address ranges.
+# Those names are cluster-specific: adjust them to your cluster before enabling it. It only has an effect if your CNI
+# enforces NetworkPolicies, and a wrong ingress namespace makes the service unreachable.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -7,7 +13,8 @@ spec:
     matchLabels: { app.kubernetes.io/name: lexi }
   policyTypes: [Ingress, Egress]
   ingress:
-    # Only the ingress controller reaches the API port; metrics only from a monitoring namespace.
+    # Only the ingress controller reaches the API port (its namespace: LEXI_INGRESS_NAMESPACE in scripts/deploy.sh,
+    # default projectcontour); metrics only from a monitoring namespace.
     - from:
         - namespaceSelector:
             matchLabels: { kubernetes.io/metadata.name: projectcontour }

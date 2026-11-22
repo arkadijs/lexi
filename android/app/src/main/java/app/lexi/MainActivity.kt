@@ -344,6 +344,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                 "network" -> R.string.st_no_network
                 "auth" -> R.string.st_auth
                 "clock" -> R.string.st_clock
+                "provider" -> R.string.st_provider
                 "rate" -> R.string.st_rate
                 "service" -> R.string.st_service
                 "audio" -> R.string.st_audio

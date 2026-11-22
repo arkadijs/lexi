@@ -1,4 +1,4 @@
-# Sourced by a script that runs ON the build host (remote). Usage: measure_run <label> <command...>
+# Sourced by a script that runs ON the build host (the build host). Usage: measure_run <label> <command...>
 #
 # Runs the command while sampling the host's CPU once a second, then prints how parallel it really was:
 # busy cores (peak / average, with the host's idle background load subtracted), the share of time spent at

@@ -3,7 +3,7 @@ package app.lexi
 import android.content.Context
 
 /**
- * The Realtime models offered in the selector: the cheap default and the full one. The minter must list both
+ * The Realtime models offered in the selector: the cheap default and the full one. The service must list both
  * in LEXI_MODELS; prices live in the core (pricing module). Chosen per call, so the selector is locked
  * while a call runs.
  */

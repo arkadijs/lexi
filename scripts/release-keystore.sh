@@ -3,9 +3,11 @@
 #   scripts/release-keystore.sh
 # BACK UP release.jks and release.pass (password manager or an encrypted drive). A lost key means every
 # friend must uninstall Lexi before they can install an update (Android refuses a different signature).
-# The key is generated in the builder container on remote (no JDK needed locally); the password goes over stdin.
+# The key is generated in the builder container on the build host (no JDK needed locally); the password goes over stdin.
 set -euo pipefail
-HOST="${LEXI_DEPLOY_HOST:-deploy.example.com}"
+cd "$(dirname "$0")/.."
+. scripts/env.sh
+lexi_need_host
 DIR="${LEXI_RELEASE_DIR:-$HOME/.config/lexi}"
 mkdir -p "$DIR"; chmod 700 "$DIR"
 if [ -e "$DIR/release.jks" ]; then echo "refusing to overwrite $DIR/release.jks" >&2; exit 1; fi

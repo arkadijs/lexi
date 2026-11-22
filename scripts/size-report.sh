@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Size of the Android library on remote (N1: stripped .so < 4 MB): ships the working tree, builds it twice with
+# Size of the Android library on the build host (N1: stripped .so < 4 MB): ships the working tree, builds it twice with
 # cargo-ndk (stripped = what ships, unstripped = for the per-crate breakdown) into a separate target dir, and
 # prints both sizes plus the biggest crates / C libraries by symbol size.
 #   scripts/size-report.sh
 set -euo pipefail
-HOST="${LEXI_DEPLOY_HOST:-deploy.example.com}"
 SRC=/tmp/lexi-android-src
 cd "$(dirname "$0")/.."
+. scripts/env.sh
+lexi_need_host
 tar --exclude=.git --exclude=target --exclude=.envrc --exclude='.env*' --exclude=dist \
     --exclude=android/.gradle --exclude=android/build --exclude=android/app/build \
     --exclude=android/app/src/main/jniLibs -cf - . | ssh "$HOST" "mkdir -p $SRC && tar -C $SRC -xf -"

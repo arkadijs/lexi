@@ -42,7 +42,7 @@ pub struct Config {
     pub voice: String,
     /// Google Gemini Live (second provider): key, model, base URL (tests), voices with genders, default voice,
     /// optional thinking level (`minimal`..`high`) and nothing else locked in unless set.
-    pub gemini_api_key: Option<Secret>,
+    pub google_api_key: Option<Secret>,
     pub gemini_base_url: String,
     pub gemini_model: String,
     pub gemini_voices: Vec<(String, Gender)>,
@@ -262,7 +262,7 @@ impl Config {
             model,
             models,
             voice,
-            gemini_api_key: get("GEMINI_API_KEY")
+            google_api_key: get("GOOGLE_API_KEY")
                 .filter(|s| !s.is_empty())
                 .map(Secret::new),
             gemini_base_url: get("LEXI_GEMINI_BASE_URL")

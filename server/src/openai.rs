@@ -66,7 +66,7 @@ pub struct OpenAiClient {
     search_timeout: std::time::Duration,
 }
 
-/// The one tool the bot has. The client runs it by calling `POST /v1/search` on the minter.
+/// The one tool the bot has. The client runs it by calling `POST /v1/search` on the service.
 fn web_search_tool() -> serde_json::Value {
     json!({
         "type": "function",

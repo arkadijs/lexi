@@ -1,4 +1,4 @@
-//! Call supervisor (SPEC §2.4, §4.1): minter → [`rtc`](crate::rtc) session → audio backend, plus
+//! Call supervisor (SPEC §2.4, §4.1): service → [`rtc`](crate::rtc) session → audio backend, plus
 //! mute, reconnect with backoff, the max-session guard and level publishing.
 //!
 //! Platform independent: the session factory ([`Connector`]) and the audio side ([`AudioBackend`])
@@ -24,6 +24,8 @@ pub enum ConnectError {
     Auth,
     /// The server says the phone's clock is off (HTTP 412).
     Clock,
+    /// The server has no key for the chosen provider (HTTP 501).
+    Provider,
     RateLimited,
     Service,
     Other,
@@ -35,6 +37,7 @@ impl ConnectError {
             Self::Network => "network",
             Self::Auth => "auth",
             Self::Clock => "clock",
+            Self::Provider => "provider",
             Self::RateLimited => "rate",
             Self::Service => "service",
             Self::Other => "error",
@@ -64,7 +67,7 @@ pub trait Session: Send {
 }
 
 pub struct Connected {
-    /// The model the minter put in the token; it decides which price table applies (SPEC §2.6).
+    /// The model the service put in the token; it decides which price table applies (SPEC §2.6).
     pub model: String,
     pub session: Box<dyn Session>,
     pub mic: MicProducer,
@@ -686,16 +689,16 @@ impl Handler for Forward {
     }
 }
 
-/// Mint from our minter (with the attestation header when a key is configured), then open the
+/// Mint from our service (with the attestation header when a key is configured), then open the
 /// Realtime WebRTC session. A fresh token and timestamp are used for every attempt.
 #[derive(Debug)]
 pub struct RealConnector {
-    pub minter_url: String,
+    pub service_url: String,
     pub install_hash: String,
     pub attest_key: Option<Secret>,
-    /// Requested voice (`None` = the minter's default).
+    /// Requested voice (`None` = the service's default).
     pub voice: Option<String>,
-    /// Requested model (`None` = the minter's default).
+    /// Requested model (`None` = the service's default).
     pub model: Option<String>,
     /// `openai` (default) or `google`.
     pub provider: Option<String>,
@@ -709,6 +712,7 @@ fn classify(e: &OpenAiError) -> ConnectError {
         OpenAiError::Network(_) => ConnectError::Network,
         OpenAiError::Status(401 | 403) => ConnectError::Auth,
         OpenAiError::Status(412) => ConnectError::Clock,
+        OpenAiError::Status(501) => ConnectError::Provider,
         OpenAiError::Status(429) => ConnectError::RateLimited,
         OpenAiError::Status(s) if *s >= 500 => ConnectError::Service,
         OpenAiError::Status(_) => ConnectError::Other,
@@ -726,8 +730,8 @@ impl Connector for RealConnector {
             .attest_key
             .as_ref()
             .and_then(|k| attest::header(k, now));
-        let minted = openai::mint_from_minter(
-            &self.minter_url,
+        let minted = openai::mint_from_service(
+            &self.service_url,
             &self.install_hash,
             attest.as_deref(),
             self.voice.as_deref(),
@@ -775,8 +779,8 @@ impl Connector for RealConnector {
             .attest_key
             .as_ref()
             .and_then(|k| attest::header(k, now));
-        openai::search_via_minter(
-            &self.minter_url,
+        openai::search_via_service(
+            &self.service_url,
             &self.install_hash,
             attest.as_deref(),
             query,

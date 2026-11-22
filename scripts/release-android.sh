@@ -2,17 +2,18 @@
 # Build, zipalign and sign the release APK for sideloading -> dist/lexi-<version>.apk
 #   scripts/release-android.sh [--install]
 # Needs the key from scripts/release-keystore.sh (default ~/.config/lexi/release.{jks,pass}).
-# Build-time settings: LEXI_MINTER_URL (default https://lexi.example.com) and the attestation key:
+# Build-time settings (.envrc): LEXI_SERVICE_URL (required for a release build) and the attestation key:
 #   LEXI_ATTEST_KEY=<key>   a specific key, e.g. one friend's (see docs/RUNBOOK.md); otherwise the first key
 #                           of the cluster Secret is used.
 # The keystore and its password travel over ssh stdin only and are removed from the build host afterwards.
 set -euo pipefail
-HOST="${LEXI_DEPLOY_HOST:-deploy.example.com}"
 DIR="${LEXI_RELEASE_DIR:-$HOME/.config/lexi}"
 cd "$(dirname "$0")/.."
+. scripts/env.sh
+lexi_need_host
 [ -f "$DIR/release.jks" ] && [ -f "$DIR/release.pass" ] || { echo "no signing key: run scripts/release-keystore.sh first" >&2; exit 1; }
 
-export LEXI_MINTER_URL="${LEXI_MINTER_URL:-https://lexi.example.com}"
+export LEXI_SERVICE_URL
 if [ -z "${LEXI_ATTEST_KEY:-}" ]; then export LEXI_ATTEST_FROM_CLUSTER=1; fi
 rm -f dist/app-release-unsigned.apk
 scripts/android-remote.sh assembleRelease

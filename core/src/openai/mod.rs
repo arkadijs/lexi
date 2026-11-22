@@ -12,7 +12,7 @@
 //! * Server events handled: `session.created`, `session.updated`,
 //!   `input_audio_buffer.speech_started` (barge-in), `response.done` (carries `usage`), `error`.
 //!   Everything else is parsed as [`ServerEvent::Other`] and ignored.
-//! * Ephemeral secrets come from our minter (`POST /v1/call-token`) or, for local development
+//! * Ephemeral secrets come from our service (`POST /v1/call-token`) or, for local development
 //!   only, directly from `POST /v1/realtime/client_secrets` using a dev API key from the
 //!   environment ([`mint_with_dev_key`]).
 //!
@@ -108,7 +108,7 @@ pub struct MintedToken {
 }
 
 #[derive(Deserialize)]
-struct MinterResponse {
+struct ServiceResponse {
     token: String,
     expires_at: i64,
     model: String,
@@ -116,17 +116,17 @@ struct MinterResponse {
     provider: Option<String>,
 }
 
-/// Ask the minter for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID;
-/// `voice` and `model` are among the minter's allowed values (`None` = the minter's default).
-pub fn mint_from_minter(
-    minter_url: &str,
+/// Ask the service for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID;
+/// `voice` and `model` are among the service's allowed values (`None` = the service's default).
+pub fn mint_from_service(
+    service_url: &str,
     install_hash: &str,
     attest: Option<&str>,
     voice: Option<&str>,
     model: Option<&str>,
     provider: Option<&str>,
 ) -> Result<MintedToken, OpenAiError> {
-    let url = format!("{}/v1/call-token", minter_url.trim_end_matches('/'));
+    let url = format!("{}/v1/call-token", service_url.trim_end_matches('/'));
     let mut req = agent().post(&url).header("X-Lexi-Install", install_hash);
     if let Some(a) = attest {
         req = req.header("X-Lexi-Attest", a);
@@ -146,10 +146,10 @@ pub fn mint_from_minter(
         .header("Content-Type", "application/json")
         .send(body)
         .map_err(map_err)?;
-    let r: MinterResponse = resp
+    let r: ServiceResponse = resp
         .body_mut()
         .read_json()
-        .map_err(|_| OpenAiError::BadResponse("minter JSON"))?;
+        .map_err(|_| OpenAiError::BadResponse("service JSON"))?;
     if r.token.is_empty() {
         return Err(OpenAiError::BadResponse("empty token"));
     }
@@ -166,14 +166,14 @@ struct SearchResponse {
     text: String,
 }
 
-/// Ask the minter to run a web search (`POST /v1/search`) and return the short plain-text answer.
-pub fn search_via_minter(
-    minter_url: &str,
+/// Ask the service to run a web search (`POST /v1/search`) and return the short plain-text answer.
+pub fn search_via_service(
+    service_url: &str,
     install_hash: &str,
     attest: Option<&str>,
     query: &str,
 ) -> Result<String, OpenAiError> {
-    let url = format!("{}/v1/search", minter_url.trim_end_matches('/'));
+    let url = format!("{}/v1/search", service_url.trim_end_matches('/'));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .tls_config(tls())
         .timeout_global(Some(SEARCH_TIMEOUT))
@@ -202,7 +202,7 @@ struct SecretResponse {
 }
 
 /// Session options for [`mint_with_dev_key`] (development and measurement only; deployed sessions are
-/// configured by the minter). `None` keeps the API default.
+/// configured by the service). `None` keeps the API default.
 #[derive(Debug, Clone)]
 pub struct DevSession {
     pub model: String,
@@ -221,7 +221,7 @@ impl Default for DevSession {
         Self {
             model: MODEL.into(),
             voice: "cedar".into(),
-            instructions: "You are Lexi, a friendly, concise vocabulary coach. Keep replies to one to three sentences.".into(),
+            instructions: "You are Lexi, a friendly voice chat partner. Keep replies short: one or two sentences.".into(),
             silence_ms: None,
             eagerness: None,
             reasoning_effort: None,
@@ -386,13 +386,13 @@ mod tests {
     }
 
     #[test]
-    fn minter_fetch_parses_response_and_sends_install_header() {
+    fn service_fetch_parses_response_and_sends_install_header() {
         let body = r#"{"token":"ek_x","expires_at":123,"model":"gpt-realtime-2.1-mini"}"#;
         let resp: &'static str = Box::leak(
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        let t = mint_from_minter(&url, &"a".repeat(64), None, None, None, None).unwrap();
+        let t = mint_from_service(&url, &"a".repeat(64), None, None, None, None).unwrap();
         assert_eq!(
             (t.token.expose(), t.expires_at, t.model.as_str()),
             ("ek_x", 123, "gpt-realtime-2.1-mini")
@@ -404,13 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn minter_fetch_sends_the_requested_voice() {
+    fn service_fetch_sends_the_requested_voice() {
         let body = r#"{"token":"ek_x","expires_at":1,"model":"gpt-realtime-2.1-mini"}"#;
         let resp: &'static str = Box::leak(
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        mint_from_minter(
+        mint_from_service(
             &url,
             &"b".repeat(64),
             Some("x-att"),

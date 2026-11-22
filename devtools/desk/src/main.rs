@@ -2,9 +2,9 @@
 //! modules as the Android core, with `cpal` for audio.
 //!
 //! ```text
-//! desk --minter http://localhost:8080            # talk to Lexi (use headphones!)
+//! desk --service http://localhost:8080            # talk to Lexi (use headphones!)
 //! OPENAI_API_KEY=... desk --dev-key              # dev only: mint directly, key from env only
-//! desk --minter URL --headless --prompt "Say hi" --exit-after-response --out-wav /tmp/lexi.wav
+//! desk --service URL --headless --prompt "Say hi" --exit-after-response --out-wav /tmp/lexi.wav
 //! ```
 
 mod audio;
@@ -19,9 +19,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone] [--prompt TEXT]
+const USAGE: &str = "usage: desk (--service URL | --dev-key) [--headless] [--tone] [--prompt TEXT]
             [--exit-after-response] [--duration SECS] [--out-wav FILE] [--install-hash HEX64]
-  --minter URL            fetch an ephemeral token from lexi (set LEXI_ATTEST_KEY in the
+  --service URL            fetch an ephemeral token from lexi (set LEXI_ATTEST_KEY in the
                           environment if it runs in shared-key attestation mode)
   --dev-key               mint directly with OPENAI_API_KEY from the environment (development only)
   --headless              no mic/speaker; sends silence (or --tone) and discards/records playout
@@ -34,9 +34,9 @@ const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone
   --mic-wav FILE          with --headless: use this 48 kHz mono 16-bit WAV as mic input
   --mic-delay SECS        with --mic-wav: start feeding it after SECS (e.g. to interrupt the bot)
   --trace                 print mic/bot levels every 100 ms
-  --voice V               output voice (default: cedar with --dev-key, the minter's default with --minter)
-  --provider P            with --minter: openai (default) or google (Gemini Live, WebSocket)
-  --model M               realtime model (gpt-realtime-2.1-mini | gpt-realtime-2.1; default: mini / the minter's default)
+  --voice V               output voice (default: cedar with --dev-key, the service's default with --service)
+  --provider P            with --service: openai (default) or google (Gemini Live, WebSocket)
+  --model M               realtime model (gpt-realtime-2.1-mini | gpt-realtime-2.1; default: mini / the service's default)
   --instructions TEXT     with --dev-key: system instructions
   --vad-silence-ms N      with --dev-key: server_vad silence_duration_ms (API default 500)
   --semantic-eagerness E  with --dev-key: use semantic_vad (low|medium|high|auto)
@@ -45,7 +45,7 @@ const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone
 
 #[derive(Default)]
 struct Args {
-    minter: Option<String>,
+    service: Option<String>,
     dev_key: bool,
     headless: bool,
     tone: bool,
@@ -76,7 +76,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
-            "--minter" => a.minter = Some(val("--minter")?),
+            "--service" => a.service = Some(val("--service")?),
             "--dev-key" => a.dev_key = true,
             "--headless" => a.headless = true,
             "--tone" => a.tone = true,
@@ -111,9 +111,9 @@ fn parse_args() -> Result<Args, String> {
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
-    if !a.check_audio && a.minter.is_none() == !a.dev_key {
+    if !a.check_audio && a.service.is_none() == !a.dev_key {
         return Err(format!(
-            "exactly one of --minter / --dev-key is required\n{USAGE}"
+            "exactly one of --service / --dev-key is required\n{USAGE}"
         ));
     }
     Ok(a)
@@ -344,8 +344,8 @@ fn run() -> Result<(), String> {
         .clone()
         .unwrap_or_else(random_install_hash);
 
-    let minted = if let Some(url) = &args.minter {
-        // Deployed minters use `shared-key` attestation: the key comes from the environment only.
+    let minted = if let Some(url) = &args.service {
+        // Deployed services use `shared-key` attestation: the key comes from the environment only.
         let attest = std::env::var("LEXI_ATTEST_KEY")
             .ok()
             .filter(|k| !k.is_empty())
@@ -355,7 +355,7 @@ fn run() -> Result<(), String> {
                     .map_or(0, |d| d.as_secs());
                 openai::attest::header(&openai::Secret::new(k), now)
             });
-        openai::mint_from_minter(
+        openai::mint_from_service(
             url,
             &install_hash,
             attest.as_deref(),
@@ -363,7 +363,7 @@ fn run() -> Result<(), String> {
             args.model.as_deref(),
             args.provider.as_deref(),
         )
-        .map_err(|e| format!("minter: {e}"))?
+        .map_err(|e| format!("service: {e}"))?
     } else {
         let key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| "--dev-key needs OPENAI_API_KEY in the environment")?;
@@ -458,19 +458,19 @@ fn run() -> Result<(), String> {
     let mut first_audio_reported = false;
     while !stop.load(Ordering::SeqCst) {
         while let Ok((call_id, query)) = tool_rx.try_recv() {
-            // Answer like the app does: ask the minter, hand the result back, ask the model to continue.
-            let (murl, hash) = (args.minter.clone(), install_hash.clone());
+            // Answer like the app does: ask the service, hand the result back, ask the model to continue.
+            let (murl, hash) = (args.service.clone(), install_hash.clone());
             let t0 = Instant::now();
             let output = match murl {
                 Some(u) => {
-                    match openai::search_via_minter(&u, &hash, attest_now().as_deref(), &query) {
+                    match openai::search_via_service(&u, &hash, attest_now().as_deref(), &query) {
                         Ok(text) => {
                             serde_json::json!({ "result": text, "how_to_answer": "Tell the user only the one or two key points, in their language, in at most 20 words. No sources, no links, no list." })
                         }
                         Err(e) => serde_json::json!({ "error": e.to_string() }),
                     }
                 }
-                None => serde_json::json!({ "error": "no minter" }),
+                None => serde_json::json!({ "error": "no service" }),
             };
             println!(
                 "tool result after {} ms: {output}",

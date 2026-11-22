@@ -41,8 +41,13 @@ async fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    if cfg.api_key.is_none() {
-        tracing::warn!("OPENAI_API_KEY is not set; /readyz will report not ready");
+    match (cfg.api_key.is_some(), cfg.google_api_key.is_some()) {
+        (false, false) => tracing::warn!(
+            "neither OPENAI_API_KEY nor GOOGLE_API_KEY is set: chat is not possible, every call is rejected"
+        ),
+        (false, true) => tracing::warn!("OPENAI_API_KEY is not set: the OpenAI provider is rejected"),
+        (true, false) => tracing::warn!("GOOGLE_API_KEY is not set: the Google provider is rejected"),
+        (true, true) => tracing::info!("providers configured: openai, google"),
     }
     let (bind, metrics_bind) = (cfg.bind, cfg.metrics_bind);
     let state = match AppState::new(cfg) {

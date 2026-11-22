@@ -1,0 +1,27 @@
+# Copy to .envrc (git-ignored) and fill in. Works with direnv, and the scripts in scripts/ read it themselves.
+# Nothing in this file is mandatory for development; see README.md ("Prerequisites") for what each part is for.
+
+# --- Provider API keys (kept on the server only; the app never sees them) ---------------------------------------
+# Set at least one, or chat is not possible. A provider whose key is unset is rejected by the server and the app
+# says so. Deploying with both unset only prints a warning.
+export OPENAI_API_KEY=        # OpenAI Realtime + OpenAI web search (platform.openai.com, billing enabled)
+export GOOGLE_API_KEY=        # Google Gemini Live (aistudio.google.com / a GCP project with prepaid credits)
+
+# --- Where the service runs --------------------------------------------------------------------------------------
+# The ssh host of the machine that has kubectl access to your Kubernetes cluster and docker (images and the Android
+# app are built there). Example: k8s.example.com
+export LEXI_DEPLOY_HOST=
+
+# The public hostname of the service: the deploy host with `lexi.` in front (needs a DNS record and, for TLS, a
+# cert-manager ClusterIssuer named `letsencrypt`). Derived on purpose; override only if your DNS differs.
+export LEXI_SERVICE_HOST="lexi.${LEXI_DEPLOY_HOST}"
+export LEXI_SERVICE_URL="https://${LEXI_SERVICE_HOST}"
+
+# --- Optional ----------------------------------------------------------------------------------------------------
+# export LEXI_NODE=             # Kubernetes node name, needed only if the cluster has more than one node
+# export LEXI_CERT_ISSUER=      # cert-manager ClusterIssuer for the TLS certificate (default: letsencrypt)
+# export LEXI_NETWORK_POLICY=on # also apply deploy/k8s/optional/networkpolicy.yaml (off by default, read it first)
+# export LEXI_INGRESS_NAMESPACE= # with the NetworkPolicy: the ingress controller's namespace (default: projectcontour)
+# export LEXI_PROMPT_FILE=      # deploy your own bot prompt instead of deploy/k8s/base/instructions.txt (README: Changing the prompt)
+# export LEXI_ATTEST_KEY=       # build the app with this attestation key instead of the cluster's first one
+# export LEXI_RELEASE_DIR=      # where the release signing key lives (default ~/.config/lexi)

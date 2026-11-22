@@ -14,3 +14,7 @@ local.properties
 /dist/
 android/app/build/
 android/.kotlin/
+release.pass
+*.apk
+*.aab
+*.pftrace

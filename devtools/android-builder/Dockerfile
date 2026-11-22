@@ -1,6 +1,6 @@
 # Reproducible Android build environment (JDK 17, SDK, NDK, Rust + cargo-ndk, Gradle).
 # Needed because the dev box is aarch64 while Google's build tools are x86_64.
-# Built and used on remote by scripts/android-remote.sh (context = repo root files it ships:
+# Built and used on the build host by scripts/android-remote.sh (context = repo root files it ships:
 # devtools/android-builder + scripts/setup-android-sdk.sh).
 FROM eclipse-temurin:17-jdk
 ARG CMDLINE_TOOLS=commandlinetools-linux-15859902_latest.zip

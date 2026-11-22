@@ -281,18 +281,27 @@ async fn health_and_readiness() {
     assert_eq!(send(&r, get("/healthz")).await.0, StatusCode::OK);
     assert_eq!(send(&r, get("/readyz")).await.0, StatusCode::OK);
 
-    // No API key: alive but not ready, and minting is 503.
+    // No provider key at all: still alive and ready (the deployment must not fail), but every call is rejected
+    // with 501 "provider not configured" and the readiness body says so.
     let mut cfg = config(&up.uri(), &[]);
     cfg.api_key = None;
     let r = router(cfg);
     assert_eq!(send(&r, get("/healthz")).await.0, StatusCode::OK);
-    assert_eq!(
-        send(&r, get("/readyz")).await.0,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    let (s, _, body) = send(&r, get("/readyz")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.contains("no provider configured"), "{body}");
     assert_eq!(
         send(&r, post(Some(INSTALL), None, "10.0.0.1")).await.0,
-        StatusCode::SERVICE_UNAVAILABLE
+        StatusCode::NOT_IMPLEMENTED
+    );
+    assert_eq!(
+        send(
+            &r,
+            post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1")
+        )
+        .await
+        .0,
+        StatusCode::NOT_IMPLEMENTED
     );
 }
 
@@ -586,7 +595,7 @@ fn gemini_ok() -> ResponseTemplate {
 
 fn gemini_config(upstream: &str, extra: &[(&str, &str)]) -> Config {
     let mut e = vec![
-        ("GEMINI_API_KEY", "g-test-key"),
+        ("GOOGLE_API_KEY", "g-test-key"),
         ("LEXI_GEMINI_BASE_URL", upstream),
     ];
     e.extend_from_slice(extra);
@@ -691,7 +700,7 @@ async fn google_provider_uses_the_male_line_for_male_voices_and_validates() {
 #[tokio::test]
 async fn google_provider_needs_its_own_key_and_maps_upstream_errors() {
     let up = MockServer::start().await;
-    // No GEMINI_API_KEY: google is not ready, openai still works.
+    // No GOOGLE_API_KEY: google is not ready, openai still works.
     Mock::given(method("POST"))
         .respond_with(ok_upstream())
         .mount(&up)
@@ -702,9 +711,13 @@ async fn google_provider_needs_its_own_key_and_maps_upstream_errors() {
         post_body(r#"{"provider":"google"}"#, Some(INSTALL), None, "10.0.0.1"),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "google has no key here"
+    );
     let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "openai still works");
 
     let g = MockServer::start().await;
     Mock::given(method("POST"))
@@ -791,7 +804,7 @@ async fn google_works_without_an_openai_key_and_openai_without_a_google_key() {
         &uri,
         &[
             ("OPENAI_API_KEY", ""),
-            ("GEMINI_API_KEY", "g-test-key"),
+            ("GOOGLE_API_KEY", "g-test-key"),
             ("LEXI_GEMINI_BASE_URL", &uri),
         ],
     ));
@@ -804,8 +817,8 @@ async fn google_works_without_an_openai_key_and_openai_without_a_google_key() {
     let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.2")).await;
     assert_eq!(
         status,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "openai is not ready, google is"
+        StatusCode::NOT_IMPLEMENTED,
+        "openai has no key here, google has"
     );
     // The reverse is covered by google_provider_needs_its_own_key_and_maps_upstream_errors.
 }

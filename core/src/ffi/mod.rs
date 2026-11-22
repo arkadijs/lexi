@@ -301,7 +301,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_pinch<'l>(
 pub extern "system" fn Java_app_lexi_NativeBridge_startCall<'l>(
     mut env: EnvUnowned<'l>,
     _class: JClass<'l>,
-    minter_url: JString<'l>,
+    service_url: JString<'l>,
     install_id_hash: JString<'l>,
     attest_key: JString<'l>,
     voice: JString<'l>,
@@ -309,7 +309,7 @@ pub extern "system" fn Java_app_lexi_NativeBridge_startCall<'l>(
     provider: JString<'l>,
 ) {
     jni_guard!(env, |e| {
-        let url = minter_url.try_to_string(e)?;
+        let url = service_url.try_to_string(e)?;
         let hash = install_id_hash.try_to_string(e)?;
         let key = attest_key.try_to_string(e)?;
         let voice = voice.try_to_string(e)?;
@@ -345,7 +345,7 @@ fn start_call(
         !key.is_empty()
     );
     let connector = Arc::new(RealConnector {
-        minter_url: url,
+        service_url: url,
         install_hash: hash,
         attest_key: (!key.is_empty()).then(|| Secret::new(key)),
         voice: (!voice.is_empty()).then_some(voice),

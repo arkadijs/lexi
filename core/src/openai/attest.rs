@@ -1,4 +1,4 @@
-//! Client attestation for the minter's `shared-key` mode (SPEC §5.4):
+//! Client attestation for the service's `shared-key` mode (SPEC §5.4):
 //! `X-Lexi-Attest: <unix-ts>.<hex(hmac_sha256(key, ts))>`. Weak by design (the key ships in the
 //! app), an MVP measure until Play Integrity (Phase 7). Computed fresh for every token request so
 //! reconnects never reuse a stale timestamp.

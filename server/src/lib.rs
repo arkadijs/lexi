@@ -203,7 +203,8 @@ async fn call_token_inner(
         state.openai.has_key()
     };
     if !ready {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
+        // 501: this server has no key for the requested provider (the app tells the user).
+        return err(StatusCode::NOT_IMPLEMENTED, "provider not configured");
     }
     if let Some(v) = &request.voice {
         let known = if google {
@@ -307,7 +308,7 @@ async fn search_inner(
     // OpenAI's own search (the Responses `web_search` tool): the OpenAI bot's tool. Gemini searches inside
     // its Live session and never comes here.
     if !state.openai.has_key() {
-        return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
+        return err(StatusCode::NOT_IMPLEMENTED, "provider not configured");
     }
     let Ok(request) = serde_json::from_slice::<SearchRequest>(body) else {
         return err(StatusCode::BAD_REQUEST, "invalid body");
@@ -341,12 +342,22 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+/// Ready once the configuration is loaded: a missing provider key does not make the service unready (it keeps
+/// serving the other provider and answers 501 for the unconfigured one); the body lists what is configured.
 async fn readyz(State(state): State<Arc<AppState>>) -> Response {
+    let mut on = Vec::new();
     if state.openai.has_key() {
-        (StatusCode::OK, "ready").into_response()
-    } else {
-        err(StatusCode::SERVICE_UNAVAILABLE, "not ready")
+        on.push("openai");
     }
+    if state.gemini.has_key() {
+        on.push("google");
+    }
+    let body = if on.is_empty() {
+        "ready, no provider configured".to_owned()
+    } else {
+        format!("ready, providers: {}", on.join(" "))
+    };
+    (StatusCode::OK, body).into_response()
 }
 
 /// Public API router (port 8080).

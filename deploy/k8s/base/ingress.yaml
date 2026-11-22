@@ -1,4 +1,5 @@
-# Contour (no ingressClassName, matching the other apps on the cluster) + cert-manager.
+# No ingressClassName (the cluster's default ingress controller, Contour in the original setup) + cert-manager.
+# The ClusterIssuer name and the host are substituted by scripts/deploy.sh (LEXI_CERT_ISSUER, LEXI_SERVICE_HOST).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -7,7 +8,7 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt
 spec:
   rules:
-    - host: lexi.example.com   # overridden per overlay
+    - host: lexi.example.com   # placeholder, replaced by scripts/deploy.sh
       http:
         paths:
           - path: /v1/call-token

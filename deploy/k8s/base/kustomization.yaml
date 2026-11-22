@@ -11,7 +11,6 @@ resources:
   - ingress.yaml
   - hpa.yaml
   - pdb.yaml
-  - networkpolicy.yaml
 configMapGenerator:
   - name: lexi-env
     literals:

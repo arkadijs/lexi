@@ -33,10 +33,10 @@ object NativeBridge {
     @JvmStatic external fun touch(action: Int, pointerId: Int, x: Float, y: Float)
     @JvmStatic external fun pinch(scale: Float, focusX: Float, focusY: Float)
     /**
-     * [attestKey]: build-time shared key for the minter's `shared-key` attestation; empty = none.
-     * [voice]: one of the minter's voices; empty = the minter's default. Fixed for the whole call.
+     * [attestKey]: build-time shared key for the service's `shared-key` attestation; empty = none.
+     * [voice]: one of the service's voices; empty = the service's default. Fixed for the whole call.
      */
-    @JvmStatic external fun startCall(minterUrl: String, installIdHash: String, attestKey: String, voice: String, model: String, provider: String)
+    @JvmStatic external fun startCall(serviceUrl: String, installIdHash: String, attestKey: String, voice: String, model: String, provider: String)
     @JvmStatic external fun endCall()
     @JvmStatic external fun setMuted(muted: Boolean)
     @JvmStatic external fun onAudioRouteChanged()

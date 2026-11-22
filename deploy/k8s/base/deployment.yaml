@@ -30,13 +30,14 @@ spec:
           envFrom:
             - configMapRef: { name: lexi-env }
           env:
+            # Both provider keys are optional: a provider without its Secret is rejected by the service (HTTP 501)
+            # and the app says so; the other provider keeps working, and the pods start either way.
             - name: OPENAI_API_KEY
               valueFrom:
-                secretKeyRef: { name: openai-api-key, key: OPENAI_API_KEY }
-            # Optional: without the Secret the Google provider answers 503 and OpenAI keeps working.
-            - name: GEMINI_API_KEY
+                secretKeyRef: { name: openai-api-key, key: OPENAI_API_KEY, optional: true }
+            - name: GOOGLE_API_KEY
               valueFrom:
-                secretKeyRef: { name: gemini-api-key, key: GEMINI_API_KEY, optional: true }
+                secretKeyRef: { name: google-api-key, key: GOOGLE_API_KEY, optional: true }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

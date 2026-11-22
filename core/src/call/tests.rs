@@ -383,6 +383,15 @@ fn a_clock_error_is_reported_with_its_own_code_and_not_retried() {
 }
 
 #[test]
+fn a_provider_the_server_has_no_key_for_is_reported_and_not_retried() {
+    let c = MockConnector::new(vec![Err(ConnectError::Provider)]);
+    let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
+    rig.wait_state(CallState::Error);
+    assert_eq!(rig.last().unwrap().1.as_deref(), Some("provider"));
+    assert_eq!(c.calls(), 1);
+}
+
+#[test]
 fn rate_limit_is_not_retried_on_reconnect() {
     let c = MockConnector::new(vec![Ok(()), Err(ConnectError::RateLimited)]);
     let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());

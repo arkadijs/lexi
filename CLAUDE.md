@@ -17,6 +17,6 @@ Google Gemini Live (WebSocket) added as a second provider.
   - Android lib: `cargo ndk -t arm64-v8a --platform 31 -o android/app/src/main/jniLibs build -p lexi-core --release`
   - App: `cd android && ./gradlew assembleDebug`
   - Server: `OPENAI_API_KEY=... cargo run -p lexi`
-  - Desktop harness: `cargo run -p desk -- --minter http://localhost:8080`
+  - Desktop harness: `cargo run -p desk -- --service http://localhost:8080`
   - Deploy: `scripts/deploy.sh` (see `docs/RUNBOOK.md`)
 - If something in the spec turns out to be wrong or impossible, stop, explain, and propose an edit to `docs/SPEC.md` instead of silently diverging.

@@ -8,8 +8,8 @@ plugins {
 val withArmv7 = providers.gradleProperty("withArmv7").isPresent
 val repoRoot = rootProject.projectDir.parentFile
 
-// Build-time settings (never committed): LEXI_MINTER_URL and LEXI_ATTEST_KEY from the environment or
-// -PlexiMinterUrl / -PlexiAttestKey. The attestation key ships inside the APK, so it is a weak
+// Build-time settings (never committed): LEXI_SERVICE_URL and LEXI_ATTEST_KEY from the environment or
+// -PlexiServiceUrl / -PlexiAttestKey. The attestation key ships inside the APK, so it is a weak
 // MVP measure only (SPEC §5.4).
 fun setting(env: String, prop: String, default: String): String =
     providers.environmentVariable(env).orElse(providers.gradleProperty(prop)).getOrElse(default)
@@ -36,6 +36,14 @@ val buildRust = tasks.register<Exec>("buildRust") {
     outputs.dir(layout.projectDirectory.dir("src/main/jniLibs"))
 }
 tasks.named("preBuild") { dependsOn(buildRust) }
+// A release build has no sensible default address: refuse to build an app that points nowhere.
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        if (setting("LEXI_SERVICE_URL", "lexiServiceUrl", "").isEmpty()) {
+            throw GradleException("LEXI_SERVICE_URL is not set: a release build needs the service address (see .envrc.example)")
+        }
+    }
+}
 
 android {
     namespace = "app.lexi"
@@ -56,11 +64,11 @@ android {
         debug {
             // A local `cargo run -p lexi` reached over `adb reverse tcp:8080 tcp:8080`
             // (cleartext to localhost is allowed in debug only).
-            buildConfigField("String", "MINTER_URL", quoted(setting("LEXI_MINTER_URL", "lexiMinterUrl", "http://localhost:8080")))
+            buildConfigField("String", "SERVICE_URL", quoted(setting("LEXI_SERVICE_URL", "lexiServiceUrl", "http://localhost:8080")))
             buildConfigField("String", "ATTEST_KEY", quoted(attestKey))
         }
         release {
-            buildConfigField("String", "MINTER_URL", quoted(setting("LEXI_MINTER_URL", "lexiMinterUrl", "https://lexi.example.com")))
+            buildConfigField("String", "SERVICE_URL", quoted(setting("LEXI_SERVICE_URL", "lexiServiceUrl", "")))
             buildConfigField("String", "ATTEST_KEY", quoted(attestKey))
             isMinifyEnabled = true
             isShrinkResources = true

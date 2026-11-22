@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# Build the Android app on remote (x86_64; Google's build tools don't run on this aarch64 dev box).
+# Build the Android app on the build host $LEXI_DEPLOY_HOST (x86_64 Linux with docker; Google's build tools do not run
+# on every dev machine, e.g. aarch64). The toolchain lives in the container image devtools/android-builder.
 #   scripts/android-remote.sh [gradle args]      # default: assembleDebug; APK is copied to dist/
 # Build-time settings (see android/app/build.gradle.kts):
-#   LEXI_MINTER_URL=https://lexi.example.com   # default: debug http://localhost:8080 (adb reverse), release = remote
+#   LEXI_SERVICE_URL=https://lexi.example.com  # from .envrc; debug default http://localhost:8080 (adb reverse), release requires it
 #   LEXI_ATTEST_FROM_CLUSTER=1                        # read the shared attestation key from the cluster Secret
 #   LEXI_ATTEST_KEY=<key>                             # or give one key explicitly (per-friend builds)
 #   LEXI_COLD=1                                       # throwaway target volume = full dependency compile (use with --rerun-tasks)
 # Every build prints a [measure] summary of how many cores it really kept busy (scripts/measure-lib.sh).
 # Ships the working tree (never .envrc/.git/target), runs the builder image, copies results back.
 set -euo pipefail
-HOST="${LEXI_DEPLOY_HOST:-deploy.example.com}"
 SRC=/tmp/lexi-android-src
 cd "$(dirname "$0")/.."
+. scripts/env.sh
+lexi_need_host
+lexi_warn_no_keys
 
 if ! ssh "$HOST" 'docker image inspect lexi-android-builder >/dev/null 2>&1'; then
   echo ">> building lexi-android-builder (first time, several minutes)"
@@ -28,7 +31,7 @@ tar --exclude=.git --exclude=target --exclude=.envrc --exclude='.env*' --exclude
     --exclude=android/app/src/main/jniLibs -cf - . \
   | ssh "$HOST" "mkdir -p $SRC && tar -C $SRC -xf -"
 
-# Use every core of the build host (remote has 80): no --cpus limit, and all parallelism knobs set explicitly.
+# Use every core of the build host: no --cpus limit, and all parallelism knobs set explicitly.
 JOBS="$(ssh "$HOST" nproc)"
 ENVFILE=""
 if [ "${LEXI_ATTEST_FROM_CLUSTER:-}" = 1 ]; then
@@ -39,8 +42,8 @@ if [ -n "${LEXI_ATTEST_KEY:-}" ]; then
   # A specific key (e.g. one friend's): it travels in the stdin script (never in a command line).
   ENVFILE="--env-file <(printf 'LEXI_ATTEST_KEY=%s\\n' '$LEXI_ATTEST_KEY')"
 fi
-MINTER_ENV=""
-[ -n "${LEXI_MINTER_URL:-}" ] && MINTER_ENV="-e LEXI_MINTER_URL=$LEXI_MINTER_URL"
+SERVICE_ENV=""
+[ -n "${LEXI_SERVICE_URL:-}" ] && SERVICE_ENV="-e LEXI_SERVICE_URL=$LEXI_SERVICE_URL"
 echo ">> building with $JOBS jobs (gradle ${*:-assembleDebug})"
 # The remote command is a script on stdin (measure-lib.sh + one measured docker run), so the env-file
 # process substitution needs no extra quoting. LEXI_COLD=1 uses a throwaway target volume: a full
@@ -50,7 +53,7 @@ if [ "${LEXI_COLD:-}" = 1 ]; then TARGET_VOL=lexi-target-cold; ssh "$HOST" "dock
 {
   cat scripts/measure-lib.sh
   cat <<REMOTE
-measure_run "android build (gradle ${*:-assembleDebug})" docker run --rm $MINTER_ENV $ENVFILE -e LEXI_UID=\$(id -u) -e LEXI_GID=\$(id -g) -e LEXI_JOBS=$JOBS \\
+measure_run "android build (gradle ${*:-assembleDebug})" docker run --rm $SERVICE_ENV $ENVFILE -e LEXI_UID=\$(id -u) -e LEXI_GID=\$(id -g) -e LEXI_JOBS=$JOBS \\
   -e CARGO_BUILD_JOBS=$JOBS -e CMAKE_BUILD_PARALLEL_LEVEL=$JOBS -e MAKEFLAGS=-j$JOBS \\
   -v $SRC:/work -v lexi-gradle:/root/.gradle -v lexi-android:/root/.android -v $TARGET_VOL:/work/target \\
   -w /work lexi-android-builder scripts/android-build.sh $*

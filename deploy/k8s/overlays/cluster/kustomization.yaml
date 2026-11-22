@@ -1,17 +1,14 @@
-# The deploy.example.com cluster: no registry, images are built with docker on the node (containerd store),
-# hence imagePullPolicy Never. Host + TLS are handled by DNS/cert-manager automatically.
+# For a cluster without an image registry: the image is built with docker on the node and imported into the
+# kubelet's containerd (scripts/deploy.sh), hence imagePullPolicy Never. The public hostname is not set here: the
+# deploy script replaces the placeholder `lexi.example.com` in the rendered manifests with $LEXI_SERVICE_HOST.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources: [../prod]
 images:
   - name: lexi
     newName: lexi
-    newTag: remote   # replaced by scripts/deploy.sh with the git short SHA
+    newTag: local   # replaced by scripts/deploy.sh with the git short SHA
 patches:
   - target: { kind: Deployment, name: lexi }
     patch: |-
       - { op: replace, path: /spec/template/spec/containers/0/imagePullPolicy, value: Never }
-  - target: { kind: Ingress, name: lexi }
-    patch: |-
-      - { op: replace, path: /spec/rules/0/host, value: lexi.example.com }
-      - { op: replace, path: /spec/tls/0/hosts/0, value: lexi.example.com }

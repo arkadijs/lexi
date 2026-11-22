@@ -5,7 +5,8 @@ Thin Kotlin shell (no Compose, **no dependencies at all**: minSdk 31 platform AP
 
 ## Build
 
-Google's build tools are x86_64-only, so on this aarch64 dev box the app is built in a container on remote:
+Google's build tools are x86_64-only, so the app is built in a container on a build host (`LEXI_DEPLOY_HOST`, an
+x86_64 Linux machine with docker; the toolchain image is built there on the first run). Settings come from `.envrc`:
 
 ```sh
 scripts/android-remote.sh                 # assembleDebug  -> dist/app-debug.apk
@@ -22,15 +23,15 @@ The build uses all cores of the host. On an x86_64 machine with the SDK, `script
 
 | Setting (env / `-P`) | Default | Meaning |
 |---|---|---|
-| `LEXI_MINTER_URL` / `lexiMinterUrl` | debug `http://localhost:8080`, release `https://lexi.example.com` | `BuildConfig.MINTER_URL`. Cleartext is allowed to `localhost` in debug only (use `adb reverse tcp:8080 tcp:8080` to reach a minter on the dev machine). |
-| `LEXI_ATTEST_KEY` / `lexiAttestKey` | empty (no attestation) | Shared key for the minter's `shared-key` mode. It ships inside the APK (weak, MVP only; Play Integrity replaces it in Phase 7). |
+| `LEXI_SERVICE_URL` / `lexiServiceUrl` | debug `http://localhost:8080`; **required** for a release build (the build fails without it) | `BuildConfig.SERVICE_URL`. Cleartext is allowed to `localhost` in debug only (use `adb reverse tcp:8080 tcp:8080` to reach a service on the dev machine). |
+| `LEXI_ATTEST_KEY` / `lexiAttestKey` | empty (no attestation) | Shared key for the service's `shared-key` mode. It ships inside the APK (weak, but enough for friends: per-friend keys are revocable, see `docs/RUNBOOK.md`). |
 
-`scripts/android-remote.sh` forwards `LEXI_MINTER_URL`, and with `LEXI_ATTEST_FROM_CLUSTER=1` reads the key from the
+`scripts/android-remote.sh` forwards `LEXI_SERVICE_URL`, and with `LEXI_ATTEST_FROM_CLUSTER=1` reads the key from the
 cluster Secret (via an env-file, so it never appears on a command line). Example for a phone that talks to the
-deployed minter:
+deployed service (`LEXI_SERVICE_URL` comes from `.envrc`):
 
 ```sh
-LEXI_MINTER_URL=https://lexi.example.com LEXI_ATTEST_FROM_CLUSTER=1 scripts/android-remote.sh assembleDebug
+LEXI_ATTEST_FROM_CLUSTER=1 scripts/android-remote.sh assembleDebug
 adb install -r dist/app-debug.apk
 ```
 
@@ -63,7 +64,7 @@ All with a **muted** microphone, so no room audio was sent (the mic ring is drai
 | Check | Result |
 |---|---|
 | Mute before the call | Works: button shows "Muted", `setMuted` precedes `startCall`, call starts silent. |
-| Tap Call → live (token + SDP + ICE/DTLS, via the deployed minter with attestation) | 1.2 s, 1.5 s, 2.0 s, 2.0 s, 2.35 s (the very first, cold call: 3.0 s). Of that: token 0.4–1.3 s, SDP exchange 0.6–1.1 s, ICE/DTLS 0.3–0.5 s. Target < 2.5 s. This is "media connected", not first audio. |
+| Tap Call → live (token + SDP + ICE/DTLS, via the deployed service with attestation) | 1.2 s, 1.5 s, 2.0 s, 2.0 s, 2.35 s (the very first, cold call: 3.0 s). Of that: token 0.4–1.3 s, SDP exchange 0.6–1.1 s, ICE/DTLS 0.3–0.5 s. Target < 2.5 s. This is "media connected", not first audio. |
 | Route switch mid-call (speaker ↔ earpiece) | The AAudio streams are re-opened, the call stays live. Bluetooth/wired not tested. |
 | Wi-Fi off for 4 s, then on | `onNetworkChanged` → reconnect with a fresh token → live again 1.3 s after Wi-Fi returned. The Wi-Fi → cellular handover is **untested** (no SIM). |
 | Call survives the screen off | A muted call ran ~12 min, ~10 of them with the screen off, with no reconnects or drops. |

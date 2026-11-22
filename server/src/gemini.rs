@@ -64,7 +64,7 @@ impl GeminiClient {
         Ok(Self {
             http,
             url: format!("{}/v1beta/auth_tokens", cfg.gemini_base_url),
-            api_key: cfg.gemini_api_key.clone(),
+            api_key: cfg.google_api_key.clone(),
             model: cfg.gemini_model.clone(),
             instructions: cfg.instructions.clone(),
             voices: cfg.gemini_voices.clone(),
