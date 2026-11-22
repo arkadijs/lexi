@@ -41,9 +41,23 @@ const GPT_REALTIME_2_1_MINI: Rates = Rates {
     image_cached: 80,
 };
 
+/// `gpt-realtime-2.1` (the full model): audio $32.00 / $0.40 cached / $64.00 out, text $4.00 / $0.40 / $24.00,
+/// image $5.00 / $0.50 (per 1M tokens).
+const GPT_REALTIME_2_1: Rates = Rates {
+    audio_in: 32_000,
+    audio_cached: 400,
+    audio_out: 64_000,
+    text_in: 4_000,
+    text_cached: 400,
+    text_out: 24_000,
+    image_in: 5_000,
+    image_cached: 500,
+};
+
 pub fn rates(model: &str) -> Option<&'static Rates> {
     match model {
         "gpt-realtime-2.1-mini" => Some(&GPT_REALTIME_2_1_MINI),
+        "gpt-realtime-2.1" => Some(&GPT_REALTIME_2_1),
         _ => None,
     }
 }
@@ -130,6 +144,14 @@ mod tests {
         let nano = cost_nano_usd(M, &documented_example()).unwrap();
         assert_eq!(nano, 2_058_840);
         assert_eq!(to_micro_usd(nano), 2059);
+    }
+
+    #[test]
+    fn full_model_prices_the_same_usage_higher() {
+        // 119 text (64 cached) in, 13 audio in, 30 text + 91 audio out at the full model's rates:
+        // 55 x 4 + 64 x 0.40 + 13 x 32 + 30 x 24 + 91 x 64 = 7 205.6 micro-USD
+        let nano = cost_nano_usd("gpt-realtime-2.1", &documented_example()).unwrap();
+        assert_eq!(nano, 7_205_600);
     }
 
     #[test]

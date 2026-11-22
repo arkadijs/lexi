@@ -305,18 +305,20 @@ pub extern "system" fn Java_app_lexi_NativeBridge_startCall<'l>(
     install_id_hash: JString<'l>,
     attest_key: JString<'l>,
     voice: JString<'l>,
+    model: JString<'l>,
 ) {
     jni_guard!(env, |e| {
         let url = minter_url.try_to_string(e)?;
         let hash = install_id_hash.try_to_string(e)?;
         let key = attest_key.try_to_string(e)?;
         let voice = voice.try_to_string(e)?;
-        start_call(url, hash, key, voice);
+        let model = model.try_to_string(e)?;
+        start_call(url, hash, key, voice, model);
         Ok(())
     })
 }
 
-fn start_call(url: String, hash: String, key: String, voice: String) {
+fn start_call(url: String, hash: String, key: String, voice: String, model: String) {
     let Some(core) = CORE.get() else {
         log::error!("startCall before init");
         return;
@@ -330,7 +332,7 @@ fn start_call(url: String, hash: String, key: String, voice: String) {
     }
     // Only the URL host is logged; the install hash and attestation key never are.
     log::info!(
-        "startCall url={url} attest={} voice={voice}",
+        "startCall url={url} attest={} voice={voice} model={model}",
         !key.is_empty()
     );
     let connector = Arc::new(RealConnector {
@@ -338,6 +340,7 @@ fn start_call(url: String, hash: String, key: String, voice: String) {
         install_hash: hash,
         attest_key: (!key.is_empty()).then(|| Secret::new(key)),
         voice: (!voice.is_empty()).then_some(voice),
+        model: (!model.is_empty()).then_some(model),
         rtc: RtcConfig::default(),
     });
     let started = CallHandle::start(

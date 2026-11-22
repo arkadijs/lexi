@@ -37,6 +37,8 @@ pub struct Config {
     pub api_key: Option<Secret>,
     pub openai_base_url: String,
     pub model: String,
+    /// Models the app may request (`model` in the request body); anything else is a 400.
+    pub models: Vec<String>,
     /// Default voice, used when the app does not ask for one.
     pub voice: String,
     /// Voices the app may request (`voice` in the request body); anything else is a 400.
@@ -46,9 +48,17 @@ pub struct Config {
     pub reasoning_effort: Option<String>,
     /// server_vad `silence_duration_ms` (API default 500); `None` leaves the default.
     pub vad_silence_ms: Option<u32>,
+    /// Give the bot the `web_search` tool and serve `POST /v1/search` (LEXI_WEB_SEARCH, default on).
+    pub web_search: bool,
+    /// Responses-API model that runs the search (LEXI_SEARCH_MODEL).
+    pub search_model: String,
+    pub search_timeout: Duration,
     pub token_ttl_secs: u32,
     pub rate_per_install: u32,
     pub rate_per_ip: u32,
+    /// Web searches per hour, per install and per IP (a conversation makes several).
+    pub rate_search_per_install: u32,
+    pub rate_search_per_ip: u32,
     pub attest_mode: AttestMode,
     pub attest_shared_key: Option<Secret>,
     /// Trust the rightmost `X-Forwarded-For` entry (set by our ingress) as the client IP.
@@ -65,6 +75,9 @@ pub const DEFAULT_INSTRUCTIONS: &str = include_str!("instructions.default.txt");
 
 /// The built-in Realtime voices (OpenAI docs, verified 2026-11-21).
 pub const DEFAULT_VOICES: &str = "alloy,ash,ballad,coral,echo,sage,shimmer,verse,marin,cedar";
+
+/// The Realtime speech models the app may pick: the cheap default and the full one (prices in core/pricing).
+pub const DEFAULT_MODELS: &str = "gpt-realtime-2.1-mini,gpt-realtime-2.1";
 
 const EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
 
@@ -129,6 +142,16 @@ impl Config {
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
             .collect();
+        let model = get("LEXI_MODEL").unwrap_or_else(|| "gpt-realtime-2.1-mini".into());
+        let models: Vec<String> = get("LEXI_MODELS")
+            .unwrap_or_else(|| DEFAULT_MODELS.to_owned())
+            .split(',')
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .collect();
+        if !models.contains(&model) {
+            return Err(format!("LEXI_MODEL {model:?} is not in LEXI_MODELS"));
+        }
         let voice = get("LEXI_VOICE").unwrap_or_else(|| "cedar".into());
         if !voices.contains(&voice) {
             return Err(format!("LEXI_VOICE {voice:?} is not in LEXI_VOICES"));
@@ -164,20 +187,26 @@ impl Config {
                 .unwrap_or_else(|| "https://api.openai.com".into())
                 .trim_end_matches('/')
                 .to_owned(),
-            model: get("LEXI_MODEL").unwrap_or_else(|| "gpt-realtime-2.1-mini".into()),
+            model,
+            models,
             voice,
             voices,
             instructions,
             reasoning_effort,
             vad_silence_ms: (vad_silence_ms != 0).then_some(vad_silence_ms),
+            web_search: parse(&get, "LEXI_WEB_SEARCH", true)?,
+            search_model: get("LEXI_SEARCH_MODEL").unwrap_or_else(|| "gpt-4.1-mini".into()),
+            search_timeout: Duration::from_millis(parse(&get, "LEXI_SEARCH_TIMEOUT_MS", 12000)?),
             token_ttl_secs,
             rate_per_install: parse(&get, "LEXI_RATE_PER_INSTALL", 30)?,
             rate_per_ip: parse(&get, "LEXI_RATE_PER_IP", 120)?,
+            rate_search_per_install: parse(&get, "LEXI_RATE_SEARCH_PER_INSTALL", 60)?,
+            rate_search_per_ip: parse(&get, "LEXI_RATE_SEARCH_PER_IP", 240)?,
             attest_mode,
             attest_shared_key,
             trust_forwarded_for: parse(&get, "LEXI_TRUST_FORWARDED_FOR", false)?,
             upstream_timeout: Duration::from_millis(parse(&get, "LEXI_UPSTREAM_TIMEOUT_MS", 5000)?),
-            request_timeout: Duration::from_millis(parse(&get, "LEXI_REQUEST_TIMEOUT_MS", 12000)?),
+            request_timeout: Duration::from_millis(parse(&get, "LEXI_REQUEST_TIMEOUT_MS", 14000)?),
         })
     }
 }

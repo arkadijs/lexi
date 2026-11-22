@@ -13,6 +13,9 @@ spec:
           - path: /v1/call-token
             pathType: Exact
             backend: { service: { name: lexi-minter, port: { name: http } } }
+          - path: /v1/search
+            pathType: Exact
+            backend: { service: { name: lexi-minter, port: { name: http } } }
   tls:
     - hosts: [lexi-minter.example.com]
       secretName: lexi-minter-cert

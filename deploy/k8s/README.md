@@ -24,7 +24,7 @@ The Kubernetes API is only reachable via ssh. `scripts/deploy.sh` ships the comm
 (`git archive HEAD`), builds the image with docker on the node, imports it into the kubelet's containerd
 namespace with a one-off Job (docker's store is a different namespace and ssh users can't reach
 containerd), creates missing Secrets, and applies `overlays/cluster`. Ingress (Contour, no ingress class,
-`cert-manager.io/cluster-issuer: letsencrypt`) only routes `/v1/call-token`; health and metrics stay internal.
+`cert-manager.io/cluster-issuer: letsencrypt`) only routes `/v1/call-token` and `/v1/search`; health and metrics stay internal.
 
 Calling the shared-key endpoint (key from the `lexi-attest-key` Secret):
 

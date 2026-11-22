@@ -31,6 +31,8 @@ pub const OPENAI_BASE: &str = "https://api.openai.com";
 pub const MODEL: &str = "gpt-realtime-2.1-mini";
 pub const DATA_CHANNEL_LABEL: &str = "oai-events";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+/// A web search takes 5-11 s end to end.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(16);
 
 /// A string that never prints itself.
 #[derive(Clone)]
@@ -102,22 +104,27 @@ struct MinterResponse {
 }
 
 /// Ask the minter for an ephemeral key. `install_hash` is the SHA-256 hex of the install ID;
-/// `voice` is one of the minter's allowed voices (`None` = the minter's default).
+/// `voice` and `model` are among the minter's allowed values (`None` = the minter's default).
 pub fn mint_from_minter(
     minter_url: &str,
     install_hash: &str,
     attest: Option<&str>,
     voice: Option<&str>,
+    model: Option<&str>,
 ) -> Result<MintedToken, OpenAiError> {
     let url = format!("{}/v1/call-token", minter_url.trim_end_matches('/'));
     let mut req = agent().post(&url).header("X-Lexi-Install", install_hash);
     if let Some(a) = attest {
         req = req.header("X-Lexi-Attest", a);
     }
-    let body = match voice {
-        Some(v) => serde_json::json!({ "voice": v }).to_string(),
-        None => "{}".to_owned(),
-    };
+    let mut body = serde_json::Map::new();
+    if let Some(v) = voice {
+        body.insert("voice".into(), v.into());
+    }
+    if let Some(m) = model {
+        body.insert("model".into(), m.into());
+    }
+    let body = serde_json::Value::Object(body).to_string();
     let mut resp = req
         .header("Content-Type", "application/json")
         .send(body)
@@ -137,6 +144,39 @@ pub fn mint_from_minter(
 }
 
 #[derive(Deserialize)]
+struct SearchResponse {
+    text: String,
+}
+
+/// Ask the minter to run a web search (`POST /v1/search`) and return the short plain-text answer.
+pub fn search_via_minter(
+    minter_url: &str,
+    install_hash: &str,
+    attest: Option<&str>,
+    query: &str,
+) -> Result<String, OpenAiError> {
+    let url = format!("{}/v1/search", minter_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(SEARCH_TIMEOUT))
+        .build()
+        .into();
+    let mut req = agent.post(&url).header("X-Lexi-Install", install_hash);
+    if let Some(a) = attest {
+        req = req.header("X-Lexi-Attest", a);
+    }
+    let body = serde_json::json!({ "query": query }).to_string();
+    let mut resp = req
+        .header("Content-Type", "application/json")
+        .send(body)
+        .map_err(map_err)?;
+    let r: SearchResponse = resp
+        .body_mut()
+        .read_json()
+        .map_err(|_| OpenAiError::BadResponse("search JSON"))?;
+    Ok(r.text)
+}
+
+#[derive(Deserialize)]
 struct SecretResponse {
     value: String,
     expires_at: i64,
@@ -146,6 +186,7 @@ struct SecretResponse {
 /// configured by the minter). `None` keeps the API default.
 #[derive(Debug, Clone)]
 pub struct DevSession {
+    pub model: String,
     pub voice: String,
     pub instructions: String,
     /// server_vad `silence_duration_ms` (API default 500).
@@ -159,6 +200,7 @@ pub struct DevSession {
 impl Default for DevSession {
     fn default() -> Self {
         Self {
+            model: MODEL.into(),
             voice: "cedar".into(),
             instructions: "You are Lexi, a friendly, concise vocabulary coach. Keep replies to one to three sentences.".into(),
             silence_ms: None,
@@ -184,7 +226,7 @@ impl DevSession {
         };
         let mut session = serde_json::json!({
             "type": "realtime",
-            "model": MODEL,
+            "model": self.model,
             "instructions": self.instructions,
             "audio": {
                 "output": { "voice": self.voice },
@@ -220,7 +262,7 @@ pub fn mint_with_dev_key(
     Ok(MintedToken {
         token: Secret::new(r.value),
         expires_at: r.expires_at,
-        model: MODEL.into(),
+        model: opts.model.clone(),
     })
 }
 
@@ -329,7 +371,7 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        let t = mint_from_minter(&url, &"a".repeat(64), None, None).unwrap();
+        let t = mint_from_minter(&url, &"a".repeat(64), None, None, None).unwrap();
         assert_eq!(
             (t.token.expose(), t.expires_at, t.model.as_str()),
             ("ek_x", 123, "gpt-realtime-2.1-mini")
@@ -347,11 +389,24 @@ mod tests {
             format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_boxed_str(),
         );
         let (url, h) = serve_once(resp);
-        mint_from_minter(&url, &"b".repeat(64), Some("x-att"), Some("cedar")).unwrap();
+        mint_from_minter(
+            &url,
+            &"b".repeat(64),
+            Some("x-att"),
+            Some("cedar"),
+            Some("gpt-realtime-2.1"),
+        )
+        .unwrap();
         let req = h.join().unwrap().to_ascii_lowercase();
         assert!(req.contains("content-type: application/json"));
         assert!(req.contains("x-lexi-attest: x-att"));
-        assert!(req.ends_with(r#"{"voice":"cedar"}"#), "{req}");
+        let json: serde_json::Value =
+            serde_json::from_str(req.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"voice":"cedar","model":"gpt-realtime-2.1"}),
+            "{req}"
+        );
     }
 }
 

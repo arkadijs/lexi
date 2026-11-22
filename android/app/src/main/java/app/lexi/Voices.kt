@@ -4,13 +4,14 @@ import android.content.Context
 
 /**
  * The voices offered in the selector (the minter accepts all ten built-in Realtime voices; the app only
- * offers these two). Cedar is the default. A stored choice that is no longer offered falls back to the first.
+ * offers these three). Cedar is the default. A stored choice that is no longer offered falls back to the first.
  */
 object Voices {
     class Voice(val id: String, val label: String)
 
     val all = listOf(
         Voice("cedar", "Cedar"),
+        Voice("marin", "Marin"),
         Voice("alloy", "Alloy"),
     )
 

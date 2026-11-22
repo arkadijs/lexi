@@ -356,3 +356,186 @@ async fn voice_allowlist_is_configurable() {
     .await;
     assert_eq!((ok, no), (StatusCode::OK, StatusCode::BAD_REQUEST));
 }
+
+#[tokio::test]
+async fn requested_model_is_forwarded_and_echoed() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({
+            "session": {"model": "gpt-realtime-2.1"}
+        })))
+        .respond_with(ok_upstream())
+        .expect(1)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let (status, _, text) = send(
+        &r,
+        post_body(
+            r#"{"model":"gpt-realtime-2.1"}"#,
+            Some(INSTALL),
+            None,
+            "10.0.0.1",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(text.contains(r#""model":"gpt-realtime-2.1""#), "{text}");
+}
+
+#[tokio::test]
+async fn unknown_model_is_rejected_without_calling_upstream() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .expect(0)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    for body in [r#"{"model":"gpt-live-1"}"#, r#"{"model":""}"#] {
+        let (status, _, text) = send(&r, post_body(body, Some(INSTALL), None, "10.0.0.1")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(text.contains("unknown model"));
+    }
+}
+
+fn search_req(body: &str, install: Option<&str>, ip: &str) -> Request<Body> {
+    let mut b = Request::post("/v1/search");
+    if let Some(i) = install {
+        b = b.header("x-lexi-install", i);
+    }
+    let mut req = b.body(Body::from(body.to_owned())).unwrap();
+    let addr: SocketAddr = format!("{ip}:5555").parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
+    req
+}
+
+#[tokio::test]
+async fn session_gets_the_web_search_tool_unless_disabled() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({
+            "session": {"tools": [{"type": "function", "name": "web_search"}], "tool_choice": "auto"}
+        })))
+        .respond_with(ok_upstream())
+        .expect(1)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let up2 = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ok_upstream())
+        .mount(&up2)
+        .await;
+    let r = router(config(&up2.uri(), &[("LEXI_WEB_SEARCH", "false")]));
+    send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
+    let body: serde_json::Value = up2.received_requests().await.unwrap()[0]
+        .body_json()
+        .unwrap();
+    assert!(body["session"].get("tools").is_none(), "{body}");
+    let (status, ..) = send(
+        &r,
+        search_req(r#"{"query":"x"}"#, Some(INSTALL), "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn search_runs_the_responses_web_search_tool_and_returns_plain_text() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .and(header("authorization", format!("Bearer {API_KEY}").as_str()))
+        .and(body_partial_json(serde_json::json!({
+            "model": "gpt-4.1-mini",
+            "tools": [{"type": "web_search"}],
+            "input": "weather in Paris"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "output": [
+                {"type": "web_search_call", "id": "ws_1"},
+                {"type": "message", "content": [{"type": "output_text",
+                  "text": "**Sunny**, 12 degrees ([apnews.com](https://apnews.com/x?utm_source=openai))."}]}
+            ]
+        })))
+        .expect(1)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let (status, _, text) = send(
+        &r,
+        search_req(r#"{"query":"weather in Paris"}"#, Some(INSTALL), "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["text"], "Sunny, 12 degrees (apnews.com).");
+}
+
+#[tokio::test]
+async fn search_validates_requests_and_checks_the_install_header() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&up)
+        .await;
+    let r = router(config(&up.uri(), &[]));
+    let long = format!(r#"{{"query":"{}"}}"#, "a".repeat(301));
+    for (body, install) in [
+        ("{}", Some(INSTALL)),
+        (r#"{"query":"  "}"#, Some(INSTALL)),
+        (long.as_str(), Some(INSTALL)),
+        (r#"{"query":"x","extra":1}"#, Some(INSTALL)),
+        (r#"{"query":"x"}"#, None),
+        (r#"{"query":"x"}"#, Some("short")),
+    ] {
+        let (status, ..) = send(&r, search_req(body, install, "10.0.0.1")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+}
+
+#[tokio::test]
+async fn search_needs_attestation_when_configured_and_has_its_own_rate_limit() {
+    let up = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}]
+        })))
+        .mount(&up)
+        .await;
+    let r = router(config(
+        &up.uri(),
+        &[
+            ("LEXI_ATTEST_MODE", "shared-key"),
+            ("LEXI_ATTEST_SHARED_KEY", "k"),
+        ],
+    ));
+    let (status, ..) = send(
+        &r,
+        search_req(r#"{"query":"x"}"#, Some(INSTALL), "10.0.0.1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let r = router(config(&up.uri(), &[("LEXI_RATE_SEARCH_PER_INSTALL", "2")]));
+    for expect in [
+        StatusCode::OK,
+        StatusCode::OK,
+        StatusCode::TOO_MANY_REQUESTS,
+    ] {
+        let (status, ..) = send(
+            &r,
+            search_req(r#"{"query":"x"}"#, Some(INSTALL), "10.0.0.1"),
+        )
+        .await;
+        assert_eq!(status, expect);
+    }
+    // Calls to /v1/call-token are not affected by the search budget.
+    let (status, ..) = send(&r, post(Some(INSTALL), None, "10.0.0.1")).await;
+    assert_ne!(status, StatusCode::TOO_MANY_REQUESTS);
+}

@@ -110,6 +110,14 @@ impl Connector for MockConnector {
             pcm,
         })
     }
+
+    fn web_search(&self, query: &str) -> Result<String, String> {
+        if query == "fail" {
+            Err("boom".into())
+        } else {
+            Ok(format!("answer to {query}"))
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -481,6 +489,74 @@ fn unknown_model_and_missing_usage_report_no_cost() {
             .unwrap(),
     ));
     std::thread::sleep(Duration::from_millis(80));
+    assert!(rig.costs.lock().unwrap().is_empty());
+    rig.handle.hangup();
+    rig.wait_state(CallState::Ended);
+}
+
+fn tool_call_done(name: &str, args: &str) -> SessionEvent {
+    let args = serde_json::to_string(args).unwrap();
+    SessionEvent::Server(
+        crate::openai::parse_event(&format!(
+            r#"{{"type":"response.done","response":{{"status":"completed","output":[
+              {{"type":"function_call","name":"{name}","call_id":"call_9","arguments":{args}}}]}}}}"#
+        ))
+        .unwrap(),
+    )
+}
+
+fn sent_after_greeting(c: &MockConnector, n: usize) -> Vec<serde_json::Value> {
+    wait_until("tool reply sent", || c.sent.lock().unwrap().len() >= 1 + n);
+    c.sent.lock().unwrap()[1..]
+        .iter()
+        .map(|j| serde_json::from_str(j).unwrap())
+        .collect()
+}
+
+#[test]
+fn web_search_call_is_answered_and_the_model_asked_to_continue() {
+    let c = MockConnector::new(vec![]);
+    let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
+    rig.wait_state(CallState::Live);
+    c.inject(tool_call_done("web_search", r#"{"query":"weather"}"#));
+    let sent = sent_after_greeting(&c, 2);
+    assert_eq!(sent[0]["type"], "conversation.item.create");
+    assert_eq!(sent[0]["item"]["type"], "function_call_output");
+    assert_eq!(sent[0]["item"]["call_id"], "call_9");
+    let out: serde_json::Value =
+        serde_json::from_str(sent[0]["item"]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(out["result"], "answer to weather");
+    assert_eq!(sent[1]["type"], "response.create");
+    // A search is billed on top of the model's tokens, and shows in the call cost.
+    wait_until("search cost", || !rig.costs.lock().unwrap().is_empty());
+    assert_eq!(rig.costs.lock().unwrap()[0], 15_000);
+    rig.handle.hangup();
+    rig.wait_state(CallState::Ended);
+}
+
+#[test]
+fn failed_missing_or_unknown_tool_calls_still_get_an_answer_and_cost_nothing() {
+    let c = MockConnector::new(vec![]);
+    let rig = start(Arc::clone(&c), fast_cfg(), Arc::default());
+    rig.wait_state(CallState::Live);
+    for (name, args) in [
+        ("web_search", r#"{"query":"fail"}"#),
+        ("web_search", "{}"),
+        ("rm_rf", "{}"),
+    ] {
+        c.inject(tool_call_done(name, args));
+    }
+    let sent = sent_after_greeting(&c, 6);
+    let outputs: Vec<serde_json::Value> = sent
+        .iter()
+        .filter(|e| e["type"] == "conversation.item.create")
+        .map(|e| serde_json::from_str(e["item"]["output"].as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(outputs.len(), 3);
+    assert!(
+        outputs.iter().all(|o| o.get("error").is_some()),
+        "{outputs:?}"
+    );
     assert!(rig.costs.lock().unwrap().is_empty());
     rig.handle.hangup();
     rig.wait_state(CallState::Ended);

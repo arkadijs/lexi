@@ -60,11 +60,22 @@ the current official docs before implementing them.
   shows what that costs.
 - Instructions, voice, turn detection and reasoning effort are set **server-side by the minter** when the ephemeral
   key is created; the app only chooses the voice (below).
-- **Voice:** selectable from a popup at the top of the screen (§2.2) with two entries, **Cedar** (the default) and
-  **Alloy**, no section headers. The minter accepts all ten built-in voices (`LEXI_VOICES`); only the app's menu is
+- **Voice:** selectable from a popup at the top of the screen (§2.2) with three entries, **Cedar** (the default),
+  **Marin** and **Alloy**, no section headers. The minter accepts all ten built-in voices (`LEXI_VOICES`); only the app's menu is
   narrowed. The choice is sent as `voice` in the token request (§5.2), validated by the minter, remembered across
   launches (a stored voice that is no longer offered falls back to Cedar) and **fixed for the whole call**: the API
-  locks the voice once the model has spoken, so a change made during a call applies to the next one.
+  locks the voice once the model has spoken, so both selectors are disabled (dimmed, not clickable) while a call runs.
+- **Model:** a second pill beside the voice pill (same width, symmetric around the centre) chooses **Mini**
+  (`gpt-realtime-2.1-mini`, the default) or **Full** (`gpt-realtime-2.1`). Sent as `model` in the token request, validated
+  against the minter's `LEXI_MODELS`, remembered, locked during a call. The prompt was checked against both models
+  (2026-11-22, text prompts through the desk harness): replies are equally short on Full, "stop" is answered in 0.8-1.7 s.
+- **Name and web search:** the bot is called **Lexi** (the prompt says so and the greeting includes it). The session has
+  one function tool, `web_search(query)`. Realtime has no hosted web search (tool types: `function`, `mcp`), so the app
+  answers the call: `response.done` carries a `function_call` item, the core calls the minter's `POST /v1/search`
+  (attested, rate limited; the minter runs the Responses API `web_search` tool with `gpt-4.1-mini` and returns two plain
+  sentences), sends `conversation.item.create` (`function_call_output`) and `response.create`. The prompt tells the bot to
+  say a short filler first ("Секунду, гляну"); a search takes about 3-6 s. Each search adds an estimated $0.015 to the
+  call cost ($10 per 1000 calls plus a fixed 8 000 input tokens at gpt-4.1-mini rates). Off with `LEXI_WEB_SEARCH=false`.
 - **Russian voice quality:** there is no official rating. OpenAI's docs call the voices "optimized for English" (TTS
   page), recommend Marin and Cedar for best quality (not language-specific), and say language and accent are controlled
   separately in the prompt. A community thread (community.openai.com, "Realtime Russian voice…") reports an
@@ -141,6 +152,16 @@ of those usages priced with a **price table built into the app**.
   | Audio | $10.00 | $0.30 | $20.00 |
   | Text | $0.60 | $0.06 | $2.40 |
   | Image | $0.80 | $0.08 | not listed |
+
+  `gpt-realtime-2.1` (Full), same source, verified 2026-11-22:
+
+  | Modality | Input | Cached input | Output |
+  |---|---|---|---|
+  | Audio | $32.00 | $0.40 | $64.00 |
+  | Text | $4.00 | $0.40 | $24.00 |
+  | Image | $5.00 | $0.50 | not listed |
+
+  The on-screen total is **rounded up to the next cent** ($0.0011 shows as $0.01).
 
   Not in the table, deliberately: batch/flex/priority tiers (none are listed for this model) and the 10 % regional
   processing uplift (we use the default endpoint). Input audio transcription is billed separately by OpenAI, so it
@@ -267,10 +288,13 @@ configuration (model, instructions, voice, turn detection) fixed server-side.
 POST /v1/call-token
   Headers: X-Lexi-Install: <sha256(install-id) hex>
            X-Lexi-Attest: <app attestation token>          (see 5.4)
-  Body: {}   (optional: {"voice":"cedar","locale":"en"}; voice must be one of LEXI_VOICES)
+  Body: {}   (optional: {"voice":"cedar","model":"gpt-realtime-2.1","locale":"en"}; voice must be one of
+             LEXI_VOICES, model one of LEXI_MODELS)
   200 → {"token":"ek_...","expires_at":<unix>,"model":"gpt-realtime-2.1-mini"}
-  400 invalid body / unknown voice · 401 attestation failed · 429 rate limited (Retry-After) ·
+  400 invalid body / unknown voice / unknown model · 401 attestation failed · 429 rate limited (Retry-After) ·
   502 upstream error · 503 not ready
+POST /v1/search  (same headers; separate rate limits LEXI_RATE_SEARCH_PER_INSTALL=60/h, _PER_IP=240/h)
+  Body: {"query":"..."}  (1-300 chars)   200 → {"text":"two plain sentences"}   404 when LEXI_WEB_SEARCH=false
 GET /healthz   (liveness, no dependencies)
 GET /readyz    (ready once config is loaded and the key is present)
 GET /metrics   (Prometheus; on a separate port 9090)

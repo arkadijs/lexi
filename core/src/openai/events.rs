@@ -35,6 +35,39 @@ pub struct ResponseSummary {
     pub status: Option<String>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    /// Output items; only function calls are looked at.
+    #[serde(default)]
+    pub output: Vec<OutputItem>,
+}
+
+/// One item of `response.output`. For `type == "function_call"`: the tool `name`, its `call_id` and the
+/// JSON-encoded `arguments`.
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
+pub struct OutputItem {
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub call_id: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
+}
+
+impl ResponseSummary {
+    /// `(call_id, name, arguments)` of every function call in the response.
+    pub fn function_calls(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.output
+            .iter()
+            .filter(|i| i.kind == "function_call")
+            .filter_map(|i| {
+                Some((
+                    i.call_id.as_deref()?,
+                    i.name.as_deref()?,
+                    i.arguments.as_deref().unwrap_or("{}"),
+                ))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Default)]
@@ -141,6 +174,18 @@ mod tests {
             ),
             (60, 40)
         );
+    }
+
+    #[test]
+    fn response_done_lists_function_calls() {
+        let j = r#"{"type":"response.done","response":{"status":"completed","output":[
+            {"type":"message","content":[]},
+            {"type":"function_call","name":"web_search","call_id":"call_1","arguments":"{\"query\":\"news\"}"}]}}"#;
+        let Some(ServerEvent::ResponseDone { response }) = parse_event(j) else {
+            panic!("not response.done")
+        };
+        let calls: Vec<_> = response.function_calls().collect();
+        assert_eq!(calls, vec![("call_1", "web_search", r#"{"query":"news"}"#)]);
     }
 
     #[test]

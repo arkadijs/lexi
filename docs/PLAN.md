@@ -102,14 +102,21 @@ Show what the current call has cost so far (SPEC §2.6). The price table of `gpt
 *Status:* verified on the phone with the greeting response (screen = log). Please compare one call with the dashboard.
 
 ## Phase 6 — GPU visuals (`core/render`)
-- [ ] EGL setup on `ANativeWindow` (`khronos-egl`), GLES 3.0 via `glow`; render thread lifecycle tied to the surface callbacks; `AChoreographer` frame callbacks.
-- [ ] Fluid: ping-pong FBOs (RG16F velocity, R16F pressure, RGBA8/RGBA16F dye; check `EXT_color_buffer_half_float` with a fallback), passes per SPEC §2.3, touch splats, audio-reactive uniforms.
-- [ ] Fractal: smooth-coloured Mandelbrot/Julia, pan/pinch/double-tap, zoom clamp, palette shimmer and coordinate warp driven by `bot_level`.
-- [ ] Audio reactivity per SPEC §2.3: calm by default and while the user speaks (`mic_level` only nudges the calm motion); shimmer/distortion proportional to what the bot says (`bot_level` scales turbulence/dye brightness in the fluid and shimmer/warp in the fractal); fast-attack/slow-release smoothing; settles back to calm when the bot is silent. Check with recorded bot audio (desk `--out-wav`) and on the phone.
-- [ ] Adaptive quality + frame-time stats in debug builds.
-- [ ] Shaders embedded with `include_str!`; compile errors logged with source line numbers.
+- [x] EGL setup on `ANativeWindow` (`khronos-egl`), GLES 3.0 via `glow`; render thread lifecycle tied to the surface callbacks; `AChoreographer` frame callbacks.
+- [x] Fluid: ping-pong FBOs (RG16F velocity, R16F pressure, RGBA8/RGBA16F dye; check `EXT_color_buffer_half_float` with a fallback), passes per SPEC §2.3, touch splats, audio-reactive uniforms.
+- [x] Fractal: smooth-coloured Mandelbrot/Julia, pan/pinch/double-tap, zoom clamp, palette shimmer and coordinate warp driven by `bot_level`.
+- [x] Audio reactivity per SPEC §2.3: calm by default and while the user speaks (`mic_level` only nudges the calm motion); shimmer/distortion proportional to what the bot says (`bot_level` scales turbulence/dye brightness in the fluid and shimmer/warp in the fractal); fast-attack/slow-release smoothing; settles back to calm when the bot is silent. Check with recorded bot audio (desk `--out-wav`) and on the phone.
+- [x] Adaptive quality + frame-time stats in debug builds.
+- [x] Shaders embedded with `include_str!`; compile errors logged with source line numbers.
 
 **Done when:** acceptance criterion 6 passes; no GL errors in logcat; rendering stops when locked (verify via logcat/systrace).
+
+## Phase 6b — Model choice, Marin, web search, name (2026-11-22)
+- [x] Marin voice in the pill between Cedar and Alloy; second pill Mini/Full; both disabled during a call; symmetric.
+- [x] Minter: `model` in the token request (allowlist `LEXI_MODELS`), full-model prices in the core, cost rounded up to the cent.
+- [x] Prompt checked against the full model (equally short replies; stop answered in under 2 s).
+- [x] Web search: `web_search` function tool, minter `POST /v1/search` (Responses API), tool-call loop in the core, search cost in the total, verified end to end with the desk harness on both models (3 s search, 5-9 s spoken answer). The bot is named Lexi.
+- [ ] Not verified: a spoken web-search conversation on the phone (adb cannot speak), the search cost estimate against the OpenAI dashboard.
 
 ## Phase 7 — Hardening, size, release
 - [ ] Measure and report sizes (`.so` and the release APK); remove unused deps and features until N1 is met.

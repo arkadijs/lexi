@@ -34,6 +34,7 @@ const USAGE: &str = "usage: desk (--minter URL | --dev-key) [--headless] [--tone
   --mic-delay SECS        with --mic-wav: start feeding it after SECS (e.g. to interrupt the bot)
   --trace                 print mic/bot levels every 100 ms
   --voice V               output voice (default: cedar with --dev-key, the minter's default with --minter)
+  --model M               realtime model (gpt-realtime-2.1-mini | gpt-realtime-2.1; default: mini / the minter's default)
   --instructions TEXT     with --dev-key: system instructions
   --vad-silence-ms N      with --dev-key: server_vad silence_duration_ms (API default 500)
   --semantic-eagerness E  with --dev-key: use semantic_vad (low|medium|high|auto)
@@ -59,6 +60,7 @@ struct Args {
     check_audio: bool,
     // --dev-key session tuning (measurement)
     voice: Option<String>,
+    model: Option<String>,
     instructions: Option<String>,
     silence_ms: Option<u32>,
     eagerness: Option<String>,
@@ -89,6 +91,7 @@ fn parse_args() -> Result<Args, String> {
             "--trace" => a.trace = true,
             "--greet" => a.greet = true,
             "--voice" => a.voice = Some(val("--voice")?),
+            "--model" => a.model = Some(val("--model")?),
             "--instructions" => a.instructions = Some(val("--instructions")?),
             "--vad-silence-ms" => {
                 a.silence_ms = Some(
@@ -129,6 +132,8 @@ struct Printer {
     started: Instant,
     /// When the harness began feeding "user speech" (for barge-in latency).
     mic_began: Arc<Mutex<Option<Instant>>>,
+    /// `(call_id, query)` of web_search tool calls, answered by the main loop.
+    tool_calls: std::sync::mpsc::Sender<(String, String)>,
 }
 
 impl Handler for Printer {
@@ -157,7 +162,7 @@ impl Handler for Printer {
             ServerEvent::SpeechStopped => println!("[{t:>6.2}s] speech_stopped"),
             ServerEvent::ResponseDone { response } => {
                 let status = response.status.as_deref().unwrap_or("?");
-                match response.usage {
+                match &response.usage {
                     Some(u) => println!(
                         "[{t:>6.2}s] response.done status={status} usage: total={} in={} (text {}, audio {}, cached {}) out={} (text {}, audio {})",
                         u.total_tokens,
@@ -171,7 +176,19 @@ impl Handler for Printer {
                     ),
                     None => println!("[{t:>6.2}s] response.done status={status} (no usage)"),
                 }
-                self.done.store(true, Ordering::SeqCst);
+                let mut called = false;
+                for (call_id, name, args) in response.function_calls() {
+                    let q = serde_json::from_str::<serde_json::Value>(args)
+                        .ok()
+                        .and_then(|v| v["query"].as_str().map(str::to_owned))
+                        .unwrap_or_default();
+                    println!("[{t:>6.2}s] tool call {name}: {q:?}");
+                    called |= self.tool_calls.send((call_id.to_owned(), q)).is_ok();
+                }
+                // A tool call is not the end: the model speaks after the result.
+                if !called {
+                    self.done.store(true, Ordering::SeqCst);
+                }
             }
             ServerEvent::Error { error } => {
                 eprintln!(
@@ -272,6 +289,17 @@ fn check_audio() -> Result<(), String> {
     Ok(())
 }
 
+/// A fresh `X-Lexi-Attest` value from `LEXI_ATTEST_KEY` (None when unset).
+fn attest_now() -> Option<String> {
+    let k = std::env::var("LEXI_ATTEST_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    openai::attest::header(&openai::Secret::new(k), now)
+}
+
 fn run() -> Result<(), String> {
     let args = parse_args()?;
     if args.check_audio {
@@ -293,14 +321,23 @@ fn run() -> Result<(), String> {
                     .map_or(0, |d| d.as_secs());
                 openai::attest::header(&openai::Secret::new(k), now)
             });
-        openai::mint_from_minter(url, &install_hash, attest.as_deref(), args.voice.as_deref())
-            .map_err(|e| format!("minter: {e}"))?
+        openai::mint_from_minter(
+            url,
+            &install_hash,
+            attest.as_deref(),
+            args.voice.as_deref(),
+            args.model.as_deref(),
+        )
+        .map_err(|e| format!("minter: {e}"))?
     } else {
         let key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| "--dev-key needs OPENAI_API_KEY in the environment")?;
         let mut opts = openai::DevSession::default();
         if let Some(v) = &args.voice {
             opts.voice = v.clone();
+        }
+        if let Some(m) = &args.model {
+            opts.model = m.clone();
         }
         if let Some(i) = &args.instructions {
             opts.instructions = i.clone();
@@ -330,10 +367,12 @@ fn run() -> Result<(), String> {
     }
     let done = Arc::new(AtomicBool::new(false));
     let mic_began = Arc::new(Mutex::new(None));
+    let (tool_tx, tool_rx) = std::sync::mpsc::channel::<(String, String)>();
     let handler = Printer {
         done: Arc::clone(&done),
         started: Instant::now(),
         mic_began: Arc::clone(&mic_began),
+        tool_calls: tool_tx,
     };
     let (session, mic, pcm) = RtcSession::start(RtcConfig::default(), &minted.token, handler)
         .map_err(|e| e.to_string())?;
@@ -376,6 +415,32 @@ fn run() -> Result<(), String> {
     let mut last_voiced: Option<Instant> = None;
     let mut first_audio_reported = false;
     while !stop.load(Ordering::SeqCst) {
+        while let Ok((call_id, query)) = tool_rx.try_recv() {
+            // Answer like the app does: ask the minter, hand the result back, ask the model to continue.
+            let (murl, hash) = (args.minter.clone(), install_hash.clone());
+            let t0 = Instant::now();
+            let output = match murl {
+                Some(u) => {
+                    match openai::search_via_minter(&u, &hash, attest_now().as_deref(), &query) {
+                        Ok(text) => {
+                            serde_json::json!({ "result": text, "how_to_answer": "Tell the user only the one or two key points, in their language, in at most 20 words. No sources, no links, no list." })
+                        }
+                        Err(e) => serde_json::json!({ "error": e.to_string() }),
+                    }
+                }
+                None => serde_json::json!({ "error": "no minter" }),
+            };
+            println!(
+                "tool result after {} ms: {output}",
+                t0.elapsed().as_millis()
+            );
+            session.send_event(
+                serde_json::json!({"type":"conversation.item.create","item":{
+                    "type":"function_call_output","call_id":call_id,"output":output.to_string()}})
+                .to_string(),
+            );
+            session.send_event(r#"{"type":"response.create"}"#.into());
+        }
         if deadline.is_some_and(|d| Instant::now() >= d) {
             exit_reason = "duration elapsed";
             break;

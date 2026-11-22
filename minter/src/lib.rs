@@ -34,6 +34,8 @@ pub struct AppState {
     pub attestor: Attestor,
     pub per_install: Limiter,
     pub per_ip: Limiter,
+    pub per_search_install: Limiter,
+    pub per_search_ip: Limiter,
 }
 
 impl AppState {
@@ -43,6 +45,8 @@ impl AppState {
         Ok(Arc::new(Self {
             per_install: Limiter::per_hour(cfg.rate_per_install),
             per_ip: Limiter::per_hour(cfg.rate_per_ip),
+            per_search_install: Limiter::per_hour(cfg.rate_search_per_install),
+            per_search_ip: Limiter::per_hour(cfg.rate_search_per_ip),
             openai,
             attestor,
             cfg,
@@ -57,6 +61,8 @@ struct TokenRequest {
     locale: Option<String>,
     /// One of the configured `LEXI_VOICES`; absent = the default voice.
     voice: Option<String>,
+    /// One of the configured `LEXI_MODELS`; absent = the default model.
+    model: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -103,6 +109,45 @@ fn valid_install_hash(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The checks every client request passes: install header, per-IP limit, attestation, per-install limit.
+/// Returns the lower-cased install hash.
+fn authorize(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    per_ip: &Limiter,
+    per_install: &Limiter,
+) -> Result<String, Box<Response>> {
+    let install = headers
+        .get(INSTALL_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_ascii_lowercase)
+        .filter(|s| valid_install_hash(s));
+    let Some(install) = install else {
+        return Err(Box::new(err(
+            StatusCode::BAD_REQUEST,
+            "missing or invalid X-Lexi-Install",
+        )));
+    };
+
+    let ip = client_ip(state, headers, peer).to_string();
+    if let Err(retry) = per_ip.check(&ip) {
+        return Err(Box::new(too_many("ip", retry)));
+    }
+    let attest = headers.get(ATTEST_HEADER).and_then(|v| v.to_str().ok());
+    if state.attestor.verify(attest).is_err() {
+        tracing::warn!("attestation failed");
+        return Err(Box::new(err(
+            StatusCode::UNAUTHORIZED,
+            "attestation failed",
+        )));
+    }
+    if let Err(retry) = per_install.check(&install) {
+        return Err(Box::new(too_many("install", retry)));
+    }
+    Ok(install)
+}
+
 async fn call_token(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -139,39 +184,100 @@ async fn call_token_inner(
             return err(StatusCode::BAD_REQUEST, "unknown voice");
         }
     }
-    let install = headers
-        .get(INSTALL_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_ascii_lowercase)
-        .filter(|s| valid_install_hash(s));
-    let Some(install) = install else {
-        return err(StatusCode::BAD_REQUEST, "missing or invalid X-Lexi-Install");
+    if let Some(m) = &request.model {
+        if !state.cfg.models.iter().any(|allowed| allowed == m) {
+            return err(StatusCode::BAD_REQUEST, "unknown model");
+        }
+    }
+    let install = match authorize(state, peer, headers, &state.per_ip, &state.per_install) {
+        Ok(i) => i,
+        Err(r) => return *r,
     };
 
-    let ip = client_ip(state, headers, peer).to_string();
-    if let Err(retry) = state.per_ip.check(&ip) {
-        return too_many("ip", retry);
-    }
-    let attest = headers.get(ATTEST_HEADER).and_then(|v| v.to_str().ok());
-    if state.attestor.verify(attest).is_err() {
-        tracing::warn!("attestation failed");
-        return err(StatusCode::UNAUTHORIZED, "attestation failed");
-    }
-    if let Err(retry) = state.per_install.check(&install) {
-        return too_many("install", retry);
-    }
-
-    match state.openai.mint(&install, request.voice.as_deref()).await {
+    match state
+        .openai
+        .mint(&install, request.voice.as_deref(), request.model.as_deref())
+        .await
+    {
         Ok(secret) => Json(TokenResponse {
             token: secret.value.expose().to_owned(),
             expires_at: secret.expires_at,
-            model: state.cfg.model.clone(),
+            model: request.model.unwrap_or_else(|| state.cfg.model.clone()),
         })
         .into_response(),
         Err(e) => {
             metrics::counter!("lexi_upstream_errors_total").increment(1);
             // Status code only; never the body (it could echo secrets).
             tracing::error!(error = %e, "upstream mint failed");
+            err(StatusCode::BAD_GATEWAY, "upstream error")
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchRequest {
+    query: String,
+}
+
+#[derive(Serialize)]
+struct SearchResponse {
+    text: String,
+}
+
+/// Longest query accepted (characters); the model's own queries are a few words.
+const MAX_QUERY_CHARS: usize = 300;
+
+/// `POST /v1/search`: the client's answer to the bot's `web_search` tool call.
+async fn search(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let started = Instant::now();
+    let resp = search_inner(&state, peer, &headers, &body).await;
+    let status = resp.status().as_u16().to_string();
+    metrics::counter!("lexi_search_requests_total", "status" => status).increment(1);
+    metrics::histogram!("lexi_search_duration_seconds").record(started.elapsed().as_secs_f64());
+    resp
+}
+
+async fn search_inner(
+    state: &AppState,
+    peer: SocketAddr,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    if !state.cfg.web_search {
+        return err(StatusCode::NOT_FOUND, "web search is off");
+    }
+    if !state.openai.has_key() {
+        return err(StatusCode::SERVICE_UNAVAILABLE, "not ready");
+    }
+    let Ok(request) = serde_json::from_slice::<SearchRequest>(body) else {
+        return err(StatusCode::BAD_REQUEST, "invalid body");
+    };
+    let query = request.query.trim();
+    if query.is_empty() || query.chars().count() > MAX_QUERY_CHARS {
+        return err(StatusCode::BAD_REQUEST, "invalid query");
+    }
+    let install = match authorize(
+        state,
+        peer,
+        headers,
+        &state.per_search_ip,
+        &state.per_search_install,
+    ) {
+        Ok(i) => i,
+        Err(r) => return *r,
+    };
+    // The query text is never logged (it is what the user said).
+    match state.openai.search(&install, query).await {
+        Ok(text) => Json(SearchResponse { text }).into_response(),
+        Err(e) => {
+            metrics::counter!("lexi_upstream_errors_total").increment(1);
+            tracing::error!(error = %e, "upstream search failed");
             err(StatusCode::BAD_GATEWAY, "upstream error")
         }
     }
@@ -194,6 +300,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     let timeout = state.cfg.request_timeout;
     Router::new()
         .route("/v1/call-token", post(call_token))
+        .route("/v1/search", post(search))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .with_state(state)

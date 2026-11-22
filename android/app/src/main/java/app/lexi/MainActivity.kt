@@ -40,6 +40,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var status: TextView
     private lateinit var topBar: LinearLayout
     private lateinit var voicePill: TextView
+    private lateinit var modelPill: TextView
     private lateinit var costView: TextView
     private lateinit var controls: LinearLayout
     private lateinit var callBtn: IconButton
@@ -70,13 +71,22 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         surface = SurfaceView(this).also { it.holder.addCallback(this) }
         root.addView(surface, ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
 
-        voicePill = TextView(this).apply {
+        fun pill(onClick: () -> Unit) = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 14f; gravity = Gravity.CENTER
             setPadding(dp(16), dp(8), dp(16), dp(8))
             background = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(0x88202A38.toInt()) }
             minHeight = dp(40)
             isClickable = true; isFocusable = true
-            setOnClickListener { showVoiceMenu() }
+            setOnClickListener { onClick() }
+        }
+        voicePill = pill { showVoiceMenu() }
+        modelPill = pill { showModelMenu() }
+        // The two selectors side by side, the same width and the same gap either side of the centre.
+        val pills = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+            val lp = { LinearLayout.LayoutParams(dp(132), ViewGroup.LayoutParams.WRAP_CONTENT) }
+            addView(voicePill, lp().apply { marginEnd = dp(6) })
+            addView(modelPill, lp().apply { marginStart = dp(6) })
         }
         status = TextView(this).apply {
             setTextColor(0xFFFFFFFF.toInt()); textSize = 16f; gravity = Gravity.CENTER
@@ -88,9 +98,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setShadowLayer(6f, 0f, 0f, 0xFF000000.toInt())
             visibility = View.INVISIBLE // keeps the layout still before the first response
         }
-        // Top bar: the voice selector, with the status line and the call cost under it (the bottom is busy).
+        // Top bar: the voice and model selectors, with the status line and the call cost under it (the bottom is busy).
         topBar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        topBar.addView(voicePill, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        topBar.addView(pills, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         topBar.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
         topBar.addView(costView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
         root.addView(topBar, FrameLayout.LayoutParams(
@@ -184,32 +194,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) = NativeBridge.surfaceChanged(w, h)
     override fun surfaceDestroyed(holder: SurfaceHolder) = NativeBridge.surfaceDestroyed()
 
-    private fun showVoiceMenu() {
-        val menu = PopupMenu(this, voicePill)
-        val current = Voices.current(this)
-        Voices.all.forEachIndexed { i, v -> menu.menu.add(1, i, i, v.label) }
+    private fun showVoiceMenu() = showMenu(voicePill, Voices.all.map { it.label }, Voices.current(this).label) { label ->
+        Voices.all.firstOrNull { it.label == label }?.let { Voices.set(this, it) }
+    }
+
+    private fun showModelMenu() = showMenu(modelPill, Models.all.map { it.label }, Models.current(this).label) { label ->
+        Models.all.firstOrNull { it.label == label }?.let { Models.set(this, it) }
+    }
+
+    private fun showMenu(anchor: View, labels: List<String>, current: String, onPick: (String) -> Unit) {
+        if (CallModel.active) return // locked during a call
+        val menu = PopupMenu(this, anchor)
+        labels.forEachIndexed { i, l -> menu.menu.add(1, i, i, l) }
         menu.menu.setGroupCheckable(1, true, true)
         // Only the match may be touched: in an exclusive group even `isChecked = false` selects the item.
         for (n in 0 until menu.menu.size()) {
             val item = menu.menu.getItem(n)
-            if (item.title == current.label) item.isChecked = true
+            if (item.title == current) item.isChecked = true
         }
         menu.setOnMenuItemClickListener { item ->
-            Voices.all.firstOrNull { it.label == item.title.toString() }?.let { v ->
-                Voices.set(this, v)
-                // A voice is fixed once the model has spoken, so a running call keeps its voice.
-                if (CallModel.active) notice = R.string.st_voice_next
-                render()
-            }
+            onPick(item.title.toString())
+            render()
             true
         }
         menu.show()
     }
 
-    /** US dollars: four decimals below $1 ($0.0123), two above. An estimate priced from OpenAI's usage reports. */
+    /** US dollars rounded UP to the cent ($0.0011 shows as $0.01). An estimate priced from OpenAI's usage reports. */
     private fun formatCost(micro: Long): String =
-        if (micro < 1_000_000) String.format(java.util.Locale.US, "$%.4f", micro / 1e6)
-        else String.format(java.util.Locale.US, "$%.2f", micro / 1e6)
+        String.format(java.util.Locale.US, "$%.2f", (micro + 9_999) / 10_000 / 100.0)
 
     private fun toggleMode() {
         visualMode = if (visualMode == NativeBridge.MODE_FLUID) NativeBridge.MODE_FRACTAL else NativeBridge.MODE_FLUID
@@ -262,9 +275,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun render() {
         val active = CallModel.active
         val connecting = CallModel.state == CallModel.CONNECTING || CallModel.state == CallModel.RECONNECTING
-        // The "new voice applies to the next call" hint belongs to a running call and ends with it.
-        if (active && notice != R.string.st_voice_next) notice = null
-        if (!active && notice == R.string.st_voice_next) notice = null
+        if (active) notice = null
 
         callBtn.kind = if (active) IconButton.Kind.HANGUP else IconButton.Kind.CALL
         callBtn.busy = connecting
@@ -292,6 +303,11 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val voice = Voices.current(this)
         voicePill.text = "${voice.label}  ▾"
         voicePill.contentDescription = getString(R.string.cd_voice, voice.label)
+        val model = Models.current(this)
+        modelPill.text = "${model.label}  ▾"
+        modelPill.contentDescription = getString(R.string.cd_model, model.label)
+        // Both choices are per call: locked (dimmed, not clickable) while a call runs.
+        for (p in listOf(voicePill, modelPill)) { p.isEnabled = !active; p.alpha = if (active) 0.4f else 1f }
 
         val cost = CallModel.costMicro
         costView.visibility = if (cost == null) View.INVISIBLE else View.VISIBLE

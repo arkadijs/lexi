@@ -76,6 +76,10 @@ impl std::fmt::Debug for Connected {
 /// Mints a token and opens a session. Blocking; called on a worker thread.
 pub trait Connector: Send + Sync + 'static {
     fn connect(&self, events: EventSink) -> Result<Connected, ConnectError>;
+    /// Answer the model's `web_search` tool call with a short plain-text result. Blocking; worker thread.
+    fn web_search(&self, _query: &str) -> Result<String, String> {
+        Err("web search is not available".into())
+    }
 }
 
 /// Capture/playback. `attach` is called for every (re)connect with fresh rings.
@@ -135,7 +139,20 @@ enum Msg {
         gen: u64,
         result: Result<Connected, ConnectError>,
     },
+    /// A tool call finished: `output` goes back to the model as the call's result.
+    ToolDone {
+        gen: u64,
+        call_id: String,
+        output: String,
+        /// The tool cost something beyond the model's tokens (a search), nano-USD.
+        cost_nano: u64,
+    },
 }
+
+/// Estimated cost of one web search, nano-USD: the Responses `web_search` tool call ($10 per 1000) plus the
+/// search model's tokens (a fixed 8 000-token block of input at gpt-4.1-mini rates and ~600 output tokens;
+/// measured 2026-11-22: 8 174 in / 563 out). About $0.014; rounded up to $0.015.
+const SEARCH_COST_NANO: u64 = 15_000_000;
 
 #[derive(Debug)]
 pub struct CallHandle {
@@ -268,6 +285,15 @@ impl Supervisor {
                     }
                 }
                 Ok(Msg::Event { .. }) => {}
+                Ok(Msg::ToolDone {
+                    gen,
+                    call_id,
+                    output,
+                    cost_nano,
+                }) if gen == self.gen => {
+                    self.on_tool_done(&call_id, &output, cost_nano);
+                }
+                Ok(Msg::ToolDone { .. }) => {}
                 Ok(Msg::Connected { gen, result }) => {
                     if let Some((s, d)) = self.on_connected(gen, result) {
                         return self.finish(s, d);
@@ -346,6 +372,9 @@ impl Supervisor {
                 }
             }
             SessionEvent::Server(ServerEvent::ResponseDone { response }) => {
+                for (call_id, name, args) in response.function_calls() {
+                    self.run_tool(call_id, name, args);
+                }
                 if let Some(u) = response.usage {
                     log::info!(
                         "usage: total={} in={} out={}",
@@ -429,6 +458,78 @@ impl Supervisor {
         }
     }
 
+    /// Run a function call from the model on a worker thread; the result comes back as `Msg::ToolDone`.
+    fn run_tool(&mut self, call_id: &str, name: &str, arguments: &str) {
+        let (gen, tx, call_id) = (self.gen, self.tx.clone(), call_id.to_owned());
+        if name != "web_search" {
+            log::warn!("unknown tool call {name:?}");
+            let _ = tx.send(Msg::ToolDone {
+                gen,
+                call_id,
+                output: tool_output(Err("unknown tool")),
+                cost_nano: 0,
+            });
+            return;
+        }
+        let query = serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|v| v["query"].as_str().map(str::to_owned))
+            .filter(|q| !q.trim().is_empty());
+        let connector = Arc::clone(&self.connector);
+        log::info!(
+            "web_search call (query length {})",
+            query.as_deref().map_or(0, str::len)
+        );
+        let spawned = std::thread::Builder::new().name("lexi-tool".into()).spawn({
+            let tx = tx.clone();
+            let call_id = call_id.clone();
+            move || {
+                let t0 = Instant::now();
+                let result = match &query {
+                    Some(q) => connector.web_search(q),
+                    None => Err("missing query".into()),
+                };
+                log::info!(
+                    "web_search done in {} ms, ok={}",
+                    t0.elapsed().as_millis(),
+                    result.is_ok()
+                );
+                let cost_nano = if result.is_ok() { SEARCH_COST_NANO } else { 0 };
+                let output = tool_output(result.as_deref().map_err(String::as_str));
+                let _ = tx.send(Msg::ToolDone {
+                    gen,
+                    call_id,
+                    output,
+                    cost_nano,
+                });
+            }
+        });
+        if spawned.is_err() {
+            let _ = tx.send(Msg::ToolDone {
+                gen,
+                call_id,
+                output: tool_output(Err("busy")),
+                cost_nano: 0,
+            });
+        }
+    }
+
+    /// Hand a tool result to the model and ask it to continue (the API does neither by itself).
+    fn on_tool_done(&mut self, call_id: &str, output: &str, cost_nano: u64) {
+        if cost_nano > 0 && self.model.as_deref().and_then(pricing::rates).is_some() {
+            self.cost_nano += cost_nano;
+            (self.on_cost)(pricing::to_micro_usd(self.cost_nano));
+        }
+        if let Some(s) = &self.session {
+            let item = serde_json::json!({
+                "type": "conversation.item.create",
+                "item": { "type": "function_call_output", "call_id": call_id, "output": output }
+            });
+            s.send_event(item.to_string());
+            s.send_event(r#"{"type":"response.create"}"#.to_owned());
+        }
+    }
+
     /// Make the model speak first. The prompt tells it to greet; it only does so when asked to respond,
     /// because nothing the user says has arrived yet. Costs a few audio tokens per call.
     fn maybe_greet(&mut self) {
@@ -494,6 +595,19 @@ impl Supervisor {
     }
 }
 
+/// The JSON string the model receives as a tool result.
+fn tool_output(result: Result<&str, &str>) -> String {
+    match result {
+        // The reminder sits next to the data because the model follows it far better there than in the prompt.
+        Ok(text) => serde_json::json!({
+            "result": text,
+            "how_to_answer": "Tell the user only the one or two key points, in their language, in at most 20 words. No sources, no links, no list."
+        }),
+        Err(e) => serde_json::json!({ "error": e }),
+    }
+    .to_string()
+}
+
 // ----- real implementations -------------------------------------------------------------------
 
 struct RealSession(RtcSession);
@@ -537,6 +651,8 @@ pub struct RealConnector {
     pub attest_key: Option<Secret>,
     /// Requested voice (`None` = the minter's default).
     pub voice: Option<String>,
+    /// Requested model (`None` = the minter's default).
+    pub model: Option<String>,
     pub rtc: RtcConfig,
 }
 
@@ -566,6 +682,7 @@ impl Connector for RealConnector {
             &self.install_hash,
             attest.as_deref(),
             self.voice.as_deref(),
+            self.model.as_deref(),
         )
         .map_err(|e| {
             log::warn!("token request failed: {e}");
@@ -588,6 +705,23 @@ impl Connector for RealConnector {
             mic,
             pcm,
         })
+    }
+
+    fn web_search(&self, query: &str) -> Result<String, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let attest = self
+            .attest_key
+            .as_ref()
+            .and_then(|k| attest::header(k, now));
+        openai::search_via_minter(
+            &self.minter_url,
+            &self.install_hash,
+            attest.as_deref(),
+            query,
+        )
+        .map_err(|e| e.to_string())
     }
 }
 
