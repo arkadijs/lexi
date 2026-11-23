@@ -182,7 +182,8 @@ the current official docs before implementing them.
 ### 2.6 Running call cost
 The app shows what the current call has cost so far. The server reports exactly what it bills in the `usage` of each
 `response.done` event ("Usage statistics for the Response, this will correspond to billing"), so the figure is the sum
-of those usages priced with a **price table built into the app**.
+of those usages priced with a **price table built into the app**. The call duration (m:ss, or h:mm:ss) is shown to the left of
+the cost, counted from the first moment the call is live (reconnects keep counting); both stay on screen for 10 s after the call ends.
 
 - **Prices** (USD per 1M tokens, `gpt-realtime-2.1-mini`, Realtime API, standard tier; verified 2026-11-21 on
   <https://developers.openai.com/api/docs/pricing>, "Realtime & Audio"):

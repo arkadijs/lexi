@@ -10,7 +10,7 @@
 Lexi is a voice chat bot for Android: tap call, talk, and it talks back in the language you speak, and it can search
 the web when you ask about current events. The whole screen is a GPU visual (a Navier–Stokes fluid or a Julia fractal)
 that reacts to the conversation. You pick the provider (**OpenAI Realtime** over WebRTC or **Google Gemini Live** over a
-WebSocket), the voice and the model with the pills at the top; the call keeps running with the screen off, shows what it
+WebSocket), the voice and the model with the pills at the top; the call keeps running with the screen off, shows how long it has lasted and what it
 costs so far, and survives network changes.
 
 It is a hobby project that is sideloaded, not on a store, and built to be small: **the whole signed APK is about 5 MB**

@@ -42,6 +42,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var providerPill: TextView
     private lateinit var voicePill: TextView
     private lateinit var modelPill: TextView
+    private lateinit var costRow: LinearLayout
+    private lateinit var durView: TextView
+    private lateinit var dotView: TextView
     private lateinit var costView: TextView
     private lateinit var controls: LinearLayout
     private lateinit var callBtn: IconButton
@@ -56,6 +59,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var notice: Int? = null // transient status line message (resource id)
     private var micBlocked = false // permission permanently denied -> send the user to Settings
     private val refresh = Runnable { render() }
+    private val tick = android.os.Handler(android.os.Looper.getMainLooper())
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -96,16 +100,27 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setShadowLayer(6f, 0f, 0f, 0xFF000000.toInt())
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        costView = TextView(this).apply {
-            setTextColor(0xCCFFFFFF.toInt()); textSize = 14f; gravity = Gravity.CENTER
+        // Duration | dot | cost: the two texts have equal weight on either side of a fixed dot, so the dot stays on the
+        // centre line and nothing shifts when the digits change width.
+        fun costText(g: Int) = TextView(this).apply {
+            setTextColor(0xCCFFFFFF.toInt()); textSize = 14f; gravity = g
             setShadowLayer(6f, 0f, 0f, 0xFF000000.toInt())
-            visibility = View.INVISIBLE // keeps the layout still before the first response
+        }
+        durView = costText(Gravity.END)
+        dotView = costText(Gravity.CENTER).apply { text = "·"; setPadding(dp(8), 0, dp(8), 0) }
+        costView = costText(Gravity.START)
+        costRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.INVISIBLE // keeps the layout still before the call
+            addView(durView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(dotView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(costView, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         // Top bar: the voice and model selectors, with the status line and the call cost under it (the bottom is busy).
         topBar = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
         topBar.addView(pills, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         topBar.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
-        topBar.addView(costView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
+        topBar.addView(costRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(2) })
         root.addView(topBar, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP
         ))
@@ -189,6 +204,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun onStop() {
         CallModel.removeListener(refresh)
+        tick.removeCallbacks(refresh)
         super.onStop()
     }
 
@@ -233,6 +249,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     /** US dollars rounded UP to the cent ($0.0011 shows as $0.01). An estimate priced from OpenAI's usage reports. */
     private fun formatCost(micro: Long): String =
         String.format(java.util.Locale.US, "$%.2f", (micro + 9_999) / 10_000 / 100.0)
+
+    private fun formatDuration(sec: Long): String =
+        if (sec >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", sec / 3600, sec / 60 % 60, sec % 60)
+        else String.format(java.util.Locale.US, "%d:%02d", sec / 60, sec % 60)
 
     private fun toggleMode() {
         visualMode = if (visualMode == NativeBridge.MODE_FLUID) NativeBridge.MODE_FRACTAL else NativeBridge.MODE_FLUID
@@ -326,9 +346,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (google && !active) { modelPill.isEnabled = false; modelPill.alpha = 0.4f }
 
         val cost = CallModel.costMicro
-        costView.visibility = if (cost == null) View.INVISIBLE else View.VISIBLE
-        if (cost != null) costView.text = formatCost(cost)
+        val secs = CallModel.durationSec
+        costRow.visibility = if (cost == null && secs == null) View.INVISIBLE else View.VISIBLE
+        durView.text = secs?.let { formatDuration(it) } ?: ""
+        costView.text = cost?.let { formatCost(it) } ?: ""
+        dotView.visibility = if (cost != null && secs != null) View.VISIBLE else View.INVISIBLE
+        durView.contentDescription = secs?.let { getString(R.string.cd_duration, formatDuration(it)) }
         costView.contentDescription = cost?.let { getString(R.string.cd_cost, formatCost(it)) }
+        // Tick once a second while a call runs and the screen is on.
+        tick.removeCallbacks(refresh)
+        if (CallModel.active && secs != null) tick.postDelayed(refresh, 1000)
 
         status.text = notice?.let { getString(it) } ?: when (CallModel.state) {
             CallModel.CONNECTING -> getString(R.string.st_connecting)

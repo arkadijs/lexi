@@ -44,5 +44,6 @@
     <string name="cd_provider">Provider: %1$s. Tap to change</string>
     <string name="cd_model_fixed">Model: Gemini Live (fixed)</string>
     <string name="cd_model">Model: %1$s. Tap to change</string>
+    <string name="cd_duration">Call duration: %1$s</string>
     <string name="cd_cost">Cost of this call so far: %1$s</string>
 </resources>

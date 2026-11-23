@@ -2,6 +2,7 @@ package app.lexi
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 
 /** Single source of UI truth for the call. Mutated and observed on the main thread only. */
 object CallModel : NativeCallback {
@@ -26,6 +27,17 @@ object CallModel : NativeCallback {
     var costMicro: Long? = null
         private set
 
+    private var liveSinceMs = 0L
+    private var endedAtMs = 0L
+
+    /** Seconds the call has been live (connected at least once); frozen when it ends; null before it connects. */
+    val durationSec: Long?
+        get() {
+            if (liveSinceMs == 0L) return null
+            val end = if (active) SystemClock.elapsedRealtime() else endedAtMs
+            return ((end - liveSinceMs) / 1000).coerceAtLeast(0)
+        }
+
     /** Why the call ended when it was our decision rather than the user's (e.g. "interrupted"). */
     var endReason: String? = null
 
@@ -34,8 +46,9 @@ object CallModel : NativeCallback {
     /** How long the call's cost stays on screen after the call ends. */
     private const val COST_LINGER_MS = 10_000L
     private val hideCost = Runnable {
-        if (!active && costMicro != null) {
+        if (!active && (costMicro != null || liveSinceMs != 0L)) {
             costMicro = null
+            liveSinceMs = 0L
             notifyChanged()
         }
     }
@@ -54,6 +67,7 @@ object CallModel : NativeCallback {
     fun begin() {
         main.removeCallbacks(hideCost)
         costMicro = null
+        liveSinceMs = 0L
         // `muted` is deliberately kept: muting before the call starts must hold from the first frame.
         endReason = null
         set(CONNECTING, null)
@@ -76,10 +90,12 @@ object CallModel : NativeCallback {
 
     private fun set(state: Int, detail: String?) {
         val wasActive = active
+        if (state == LIVE && liveSinceMs == 0L) liveSinceMs = SystemClock.elapsedRealtime()
         this.state = state
         this.detail = detail
-        // The call just ended: keep its cost visible for a moment, then let it go.
-        if (wasActive && !active && costMicro != null) main.postDelayed(hideCost, COST_LINGER_MS)
+        // The call just ended: keep its duration and cost visible for a moment, then let them go.
+        if (wasActive && !active) endedAtMs = SystemClock.elapsedRealtime()
+        if (wasActive && !active && (costMicro != null || liveSinceMs != 0L)) main.postDelayed(hideCost, COST_LINGER_MS)
         notifyChanged()
     }
 
