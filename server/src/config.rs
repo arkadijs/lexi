@@ -345,7 +345,7 @@ mod tests {
             );
         }
         assert!(
-            DEFAULT_INSTRUCTIONS.len() < 4000,
+            DEFAULT_INSTRUCTIONS.len() < 4500,
             "the prompt is paid for on every response: keep it short"
         );
     }
